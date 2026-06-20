@@ -17,6 +17,7 @@ dependencies = [
     "tqdm==4.68.3",
     "dspy==3.2.1",
     "pydantic==2.13.3",
+    "chromadb==1.5.2"
 ]
 
 [tool.mypy]
