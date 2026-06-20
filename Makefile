@@ -5,7 +5,7 @@ install:
 	uv sync
 
 run:
-	uv run python -m src
+	uv run python3 src/main.py
 
 debug:
 	@echo "Running in debug mode..."
@@ -18,7 +18,6 @@ clean:
 	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	find . -type f -name "*.pyo" -delete 2>/dev/null || true
-	rm -rf data/output/*.json 2>/dev/null || true
 	@echo "Clean complete."
 
 lint:
