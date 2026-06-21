@@ -1,45 +1,53 @@
+from typing import List
 import dspy
-from dspy.retrieve.chromadb_rm import ChromadbRM
 import chromadb
+from chromadb.api import ClientAPI
+from chromadb.api.models.Collection import Collection
+from chromadb.api.types import QueryResult
 
-# 1. Connect DSPy to your local Ollama Server
-ollama_qwen = dspy.LM(
+# Connection to Ollama and set Qwen as default language model 
+ollama_qwen: dspy.LM = dspy.LM(
     model="ollama/qwen3:0.6b",
     api_base="http://localhost:11434",
-    api_key="none" # Ollama doesn't require an API key
+    api_key="none"
 )
+dspy.configure(lm=ollama_qwen)  # type: ignore
 
-# 2. Connect to your local ChromaDB
-retriever = ChromadbRM(
-    collection_name="codebase_chunks",
-    persist_directory="./my_local_chromadb",
-    k=2  # Fetch the top 2 most relevant code chunks
-)
+# 2. Connect to ChromaDB directly
+chroma_client: ClientAPI = chromadb.PersistentClient(path="./my_local_chromadb")
+collection: Collection = chroma_client.get_or_create_collection(name="codebase_chunks")
 
-# 3. Configure DSPy globally
-dspy.configure(lm=ollama_qwen, rm=retriever)
-
-# 4. Define your RAG logic
+# 3. Define the DSPy RAG Module
 class CodebaseRAG(dspy.Module):
-    def __init__(self):
-        super().__init__()
-        self.retrieve = dspy.Retrieve(k=2)
-        self.generate_answer = dspy.ChainOfThought("context, question -> answer")
+    def __init__(self) -> None:
+        super().__init__()  # type: ignore
+        
+        self.generate_answer: dspy.ChainOfThought = dspy.ChainOfThought("context, question -> answer")
 
-    def forward(self, question):
-        # Fetch code snippets from ChromaDB
-        context_chunks = self.retrieve(question).passages
+    def forward(self, question: str) -> dspy.Prediction:
+        # Step A: Query ChromaDB natively using its own API
+        results: QueryResult = collection.query(
+            query_texts=[question],
+            n_results=2
+        )
         
-        # Ask Qwen3 to reason and answer
-        prediction = self.generate_answer(context=context_chunks, question=question)
+        # Step B: Extract the actual text documents safely based on the QueryResult shape
+        raw_documents = results.get("documents")
+        context_chunks: List[str] = raw_documents[0] if raw_documents else []
         
-        return dspy.Prediction(context=context_chunks, answer=prediction.answer)
+        # Step C: Pass the raw text and the question into the LLM
+        prediction: dspy.Prediction = self.generate_answer(context=str(context_chunks), question=question)
+        
+        return dspy.Prediction(
+            context=context_chunks, 
+            reasoning=getattr(prediction, "reasoning", ""), 
+            answer=getattr(prediction, "answer", "")
+        )
 
 # --- Run the App ---
-rag_bot = CodebaseRAG()
+rag_bot: CodebaseRAG = CodebaseRAG()
 
-# Try asking a question (assuming you have ingested code into ChromaDB)
-result = rag_bot(question="What does the authentication module do?")
+result: dspy.Prediction = rag_bot(question="What does the authentication module do?")
 
-print(f"Thought Process:\n{result.reasoning}\n")
-print(f"Final Answer:\n{result.answer}")
+print(f"Thought Process:\n{getattr(result, 'reasoning', '')}\n")
+print(f"Final Answer:\n{getattr(result, 'answer', '')}")
