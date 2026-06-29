@@ -1,4 +1,5 @@
 import os
+import torch
 from typing import List, Dict, Any
 import chromadb
 from chromadb.api import ClientAPI
@@ -28,16 +29,23 @@ class CodebaseIndexer:
         self.chroma_client: ClientAPI = chromadb.PersistentClient(path=chroma_path)
         self.collection: Collection = self.chroma_client.get_or_create_collection(name=collection_name)
         
-        print(f"Loading embedding model ({embedding_model_name})...")
-        self.embedding_model = SentenceTransformer(embedding_model_name)
+        device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        print(f"Loading embedding model ({embedding_model_name}) on {device}...")
+        self.embedding_model = SentenceTransformer(embedding_model_name, device=device)
         
         self.python_splitter = RecursiveCharacterTextSplitter.from_language(
             language=Language.PYTHON, 
             chunk_size=1000, 
             chunk_overlap=100
         )
-        self.markdown_splitter = MarkdownHeaderTextSplitter(
+        
+        self.markdown_header_splitter = MarkdownHeaderTextSplitter(
             headers_to_split_on=[("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")]
+        )
+        self.markdown_text_splitter = RecursiveCharacterTextSplitter.from_language(
+            language=Language.MARKDOWN,
+            chunk_size=1000,
+            chunk_overlap=100
         )
         
         self.documents: List[str] = []
@@ -62,7 +70,12 @@ class CodebaseIndexer:
                     self.chunk_counter += 1
             
             elif file_type == 'markdown':
-                for doc in self.markdown_splitter.split_text(content):
+                # First split by headers to retain logical sections as metadata
+                header_splits = self.markdown_header_splitter.split_text(content)
+                # Then split those sections by length to avoid exceeding model context limits
+                final_splits = self.markdown_text_splitter.split_documents(header_splits)
+                
+                for doc in final_splits:
                     self.documents.append(doc.page_content)
                     meta = {"source": file_path, "type": "markdown"}
                     meta.update(doc.metadata)
@@ -76,8 +89,8 @@ class CodebaseIndexer:
     def _flush_batch(self, force_all: bool = False) -> None:
         """Encodes the current queue of documents and inserts them into ChromaDB."""
         while len(self.documents) >= self.batch_size or (force_all and self.documents):
-            # Take a batch size amount, or everything remaining if force_all is True
-            take_count = len(self.documents) if force_all else self.batch_size
+            # 3. Fixed Batching Logic to prevent OOM / DB payload limits
+            take_count = min(len(self.documents), self.batch_size)
             
             batch_docs = self.documents[:take_count]
             batch_metas = self.metadatas[:take_count]
@@ -102,8 +115,10 @@ class CodebaseIndexer:
         """Main execution loop that walks the directory and orchestrates processing."""
         print(f"Scanning {self.codebase_dir} for Python and Markdown files...")
         
+        ignore_dirs = {'.git', 'venv', 'env', '__pycache__', 'node_modules', 'build', 'dist', '.pytest_cache'}
+        
         for root, dirs, files in os.walk(self.codebase_dir):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ignore_dirs]
             
             for file in files:
                 file_path = os.path.join(root, file)
