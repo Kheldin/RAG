@@ -10,7 +10,6 @@ from chromadb.api.models.Collection import Collection
 from chromadb.api.types import Document, Metadata, ID, QueryResult, GetResult
 from typing import Any, cast
 
-# Import precise Pydantic models from your models path
 from src.models.models import (
     MinimalSource,
     MinimalSearchResults,
@@ -31,13 +30,19 @@ def setup_environment() -> None:
     dspy.configure(lm=ollama_qwen)  # type: ignore
 
 
-def load_retrievers(chroma_path: str, collection_name: str) -> tuple[Collection, bm25s.BM25]:
-    """Connects to ChromaDB and builds the in-memory BM25 index from its contents."""
+def load_retrievers(chroma_path: str, collection_name: str, bm25_save_path: str = "./my_local_bm25") -> tuple[Collection, bm25s.BM25]:
+    """Connects to ChromaDB and loads BM25 from disk, or builds it if missing."""
     chroma_client: ClientAPI = chromadb.PersistentClient(path=chroma_path)
     collection: Collection = chroma_client.get_or_create_collection(name=collection_name)
 
+    # Fast Path: Load the pre-built BM25 index from disk if it exists
+    if os.path.exists(bm25_save_path):
+        bm25_retriever = bm25s.BM25.load(bm25_save_path, load_corpus=True)
+        return collection, bm25_retriever
+
+    # Slow Path: Fallback fallback if index doesn't exist yet
+    print("BM25 index not found on disk. Building from ChromaDB (this will be slow)...")
     all_data: GetResult = collection.get()
-    
     all_docs: list[Document] = all_data.get("documents") or []
     all_metas: list[Metadata] = all_data.get("metadatas") or []
     all_ids: list[ID] = all_data.get("ids") or []
@@ -50,7 +55,9 @@ def load_retrievers(chroma_path: str, collection_name: str) -> tuple[Collection,
     corpus_tokens = bm25s.tokenize([doc["text"] for doc in corpus])  # type: ignore
     bm25_retriever = bm25s.BM25(corpus=corpus)
     bm25_retriever.index(corpus_tokens)  # type: ignore
-
+    
+    # Save it so next time is instant
+    bm25_retriever.save(bm25_save_path, corpus=corpus)
     return collection, bm25_retriever
 
 
@@ -191,15 +198,23 @@ class CLICommands:
         print(output_payload.model_dump_json(indent=4))
 
     def index(self, codebase_dir: str = "vllm-0.10.1", max_chunk_size: int = 1000) -> None:
-        """Triggers scanning and text chunk extraction configurations."""
+        """Triggers scanning, indexing, and saves the BM25 index to disk for fast reuse."""
         indexer = CodebaseIndexer(
             codebase_dir=codebase_dir,
             max_chunk_size=max_chunk_size
         )
         indexer.run_index()
 
+        # Build and save BM25 index on disk right after indexing completes
+        print("Pre-building and saving BM25 index to disk...")
+        _, _ = load_retrievers(
+            chroma_path="./my_local_chromadb", 
+            collection_name="codebase_chunks",
+            bm25_save_path="./my_local_bm25"
+        )
+
     def search_dataset(self, dataset_path: str, k: int = 10, save_directory: str = "data/output/search_results") -> None:
-        """Reads a dataset, runs hybrid search, and outputs a strict model-validated JSON (No LLM generation)."""
+        """Reads a dataset, runs hybrid search, and outputs a strict model-validated JSON."""
         if not os.path.exists(dataset_path):
             print(f"Error: Dataset not found at {dataset_path}")
             return
@@ -242,7 +257,7 @@ class CLICommands:
         print(f"Saved student_search_results to {save_path}")
 
     def answer_dataset(self, student_search_results_path: str, save_directory: str = "data/output/search_results_and_answer") -> None:
-        """Reads a searched dataset JSON, reopens the files to get text, and passes it to the LLM to generate answers."""
+        """Reads a searched dataset JSON, maps text using an in-memory file cache, and queries the LLM."""
         if not os.path.exists(student_search_results_path):
             print(f"Error: Search results file not found at {student_search_results_path}")
             return
@@ -250,7 +265,6 @@ class CLICommands:
         with open(student_search_results_path, 'r', encoding='utf-8') as f:
             raw_data = json.load(f)
 
-        # Leverage Pydantic to strictly parse and validate the incoming JSON schema
         try:
             search_data = StudentSearchResults.model_validate(raw_data)
         except Exception as e:
@@ -265,7 +279,6 @@ class CLICommands:
 
         setup_environment()
         
-        # Initialize the DSPy generation layer natively
         generator = dspy.ChainOfThought(
             "context, question -> answer",
             instructions="Answer the question using the provided codebase context. "
@@ -273,27 +286,30 @@ class CLICommands:
         )
 
         minimal_answers_list: list[MinimalAnswer] = []
+        
+        # In-Memory File Cache to prevent repetitive disk reads across questions
+        file_content_cache: dict[str, str] = {}
 
         for idx, item in enumerate(questions_list, 1):
-            # 1. Rebuild Context String directly from the character bounds
             context_chunks = []
             for src in item.retrieved_sources:
-                try:
-                    with open(src.file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                        # Slice the string from the original file precisely
-                        chunk_text = content[src.first_character_index:src.last_character_index]
-                        context_chunks.append(f"--- File: {src.file_path} ---\n{chunk_text}\n")
-                except Exception:
-                    continue
+                # Load file into memory cache if it hasn't been read yet
+                if src.file_path not in file_content_cache:
+                    try:
+                        with open(src.file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            file_content_cache[src.file_path] = f.read()
+                    except Exception:
+                        file_content_cache[src.file_path] = ""
+
+                content = file_content_cache[src.file_path]
+                if content:
+                    chunk_text = content[src.first_character_index:src.last_character_index]
+                    context_chunks.append(f"--- File: {src.file_path} ---\n{chunk_text}\n")
             
             context_str = "\n".join(context_chunks)
-
-            # 2. Generate Answer based purely on rebuilt context
             prediction = generator(context=context_str, question=item.question)
             answer_text = str(getattr(prediction, "answer", ""))
 
-            # 3. Create schema-valid answer entry
             minimal_answers_list.append(
                 MinimalAnswer(
                     question_id=item.question_id,
@@ -303,11 +319,10 @@ class CLICommands:
                 )
             )
 
-            # Dynamically update terminal output on the same line to match your example format
             sys.stdout.write(f"\rProcessed {idx} of {total_q} questions")
             sys.stdout.flush()
 
-        print()  # Add newline after the dynamic processing loop completes
+        print()
 
         final_output_model = StudentSearchResultsAndAnswer(
             search_results=cast(list[MinimalSearchResults], minimal_answers_list),
@@ -316,8 +331,7 @@ class CLICommands:
         )
 
         os.makedirs(save_directory, exist_ok=True)
-        filename = os.path.basename(student_search_results_path)
-        save_path = os.path.join(save_directory, filename)
+        save_path = os.path.join(save_directory, os.path.basename(student_search_results_path))
 
         with open(save_path, 'w', encoding='utf-8') as f:
             f.write(final_output_model.model_dump_json(indent=4))
