@@ -121,7 +121,7 @@ ipython_config.py
 .pdm-build/
 
 my_local_chromadb/
-
+data/
 # pixi
 #   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
 # pixi.lock
