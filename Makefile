@@ -5,11 +5,11 @@ install:
 	uv sync
 
 run:
-	uv run python3 src/main.py
+	uv run python3 -m student/__main__.py
 
 debug:
 	@echo "Running in debug mode..."
-	uv run python -m pdb -m src
+	uv run python -m pdb -m student
 
 clean:
 	@echo "Cleaning temporary files..."
@@ -22,12 +22,12 @@ clean:
 
 lint:
 	@echo "Running mypy..."
-	mypy src --warn-return-any --warn-unused-ignores --ignore-missing-imports --disallow-untyped-defs --check-untyped-defs
+	mypy student --warn-return-any --warn-unused-ignores --ignore-missing-imports --disallow-untyped-defs --check-untyped-defs
 	@echo "Running flake8..."
 	flake8 .
 
 lint-strict:
 	@echo "Running mypy (strict mode)..."
-	mypy src --strict
+	mypy student --strict
 	@echo "Running flake8..."
-	flake8 src
+	flake8 student
