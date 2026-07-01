@@ -4,7 +4,7 @@ import bm25s
 from chromadb.api.models.Collection import Collection
 from chromadb.api.types import QueryResult
 
-from student.__main__ import load_retrievers
+from src.__main__ import load_retrievers
 
 
 def evaluate_hybrid_retrieval(

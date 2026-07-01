@@ -1,7 +1,8 @@
+# src/ingest.py
 import os
 import torch
-from typing import List, Dict, Any
 import chromadb
+from typing import Any
 from chromadb.api import ClientAPI
 from chromadb.api.models.Collection import Collection
 from sentence_transformers import SentenceTransformer
@@ -12,12 +13,14 @@ from langchain_text_splitters import (
     MarkdownHeaderTextSplitter
 )
 
+
 class CodebaseIndexer:
     """Scans a codebase, splits code/markdown into chunks, and indexes them into ChromaDB."""
     
     def __init__(
         self, 
         codebase_dir: str, 
+        max_chunk_size: int = 1000,
         chroma_path: str = "./my_local_chromadb", 
         collection_name: str = "codebase_chunks",
         embedding_model_name: str = "all-MiniLM-L6-v2",
@@ -33,10 +36,12 @@ class CodebaseIndexer:
         print(f"Loading embedding model ({embedding_model_name}) on {device}...")
         self.embedding_model = SentenceTransformer(embedding_model_name, device=device)
         
+        overlap_size = max(10, int(max_chunk_size * 0.10))
+        
         self.python_splitter = RecursiveCharacterTextSplitter.from_language(
             language=Language.PYTHON, 
-            chunk_size=1000, 
-            chunk_overlap=100
+            chunk_size=max_chunk_size, 
+            chunk_overlap=overlap_size
         )
         
         self.markdown_header_splitter = MarkdownHeaderTextSplitter(
@@ -44,17 +49,16 @@ class CodebaseIndexer:
         )
         self.markdown_text_splitter = RecursiveCharacterTextSplitter.from_language(
             language=Language.MARKDOWN,
-            chunk_size=1000,
-            chunk_overlap=100
+            chunk_size=max_chunk_size,
+            chunk_overlap=overlap_size
         )
         
-        self.documents: List[str] = []
-        self.metadatas: List[Dict[str, Any]] = []
-        self.ids: List[str] = []
+        self.documents: list[str] = []
+        self.metadatas: list[dict[str, Any]] = []
+        self.ids: list[str] = []
         self.chunk_counter: int = 0
 
     def _process_file(self, file_path: str, file_type: str) -> None:
-        """Reads a file, splits it into chunks, and appends them to the processing queue."""
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
@@ -70,14 +74,12 @@ class CodebaseIndexer:
                     self.chunk_counter += 1
             
             elif file_type == 'markdown':
-                # First split by headers to retain logical sections as metadata
                 header_splits = self.markdown_header_splitter.split_text(content)
-                # Then split those sections by length to avoid exceeding model context limits
                 final_splits = self.markdown_text_splitter.split_documents(header_splits)
                 
                 for doc in final_splits:
                     self.documents.append(doc.page_content)
-                    meta = {"source": file_path, "type": "markdown"}
+                    meta: dict[str, Any] = {"source": file_path, "type": "markdown"}
                     meta.update(doc.metadata)
                     self.metadatas.append(meta)
                     self.ids.append(f"chunk_{self.chunk_counter}")
@@ -87,9 +89,7 @@ class CodebaseIndexer:
             print(f"Error processing file {file_path}: {e}")
 
     def _flush_batch(self, force_all: bool = False) -> None:
-        """Encodes the current queue of documents and inserts them into ChromaDB."""
         while len(self.documents) >= self.batch_size or (force_all and self.documents):
-            # 3. Fixed Batching Logic to prevent OOM / DB payload limits
             take_count = min(len(self.documents), self.batch_size)
             
             batch_docs = self.documents[:take_count]
@@ -97,12 +97,12 @@ class CodebaseIndexer:
             batch_ids = self.ids[:take_count]
 
             print(f"Generating embeddings for {len(batch_docs)} chunks...")
-            batch_embeddings = self.embedding_model.encode(batch_docs, show_progress_bar=False).tolist()
+            batch_embeddings = self.embedding_model.encode(batch_docs, show_progress_bar=False).tolist() # type: ignore
             
             self.collection.add(
                 documents=batch_docs,
-                embeddings=batch_embeddings,
-                metadatas=batch_metas,
+                embeddings=batch_embeddings, # type: ignore
+                metadatas=batch_metas, # type: ignore
                 ids=batch_ids
             )
             print(f"Successfully indexed {len(batch_docs)} chunks (Total: {self.chunk_counter})")
@@ -111,8 +111,7 @@ class CodebaseIndexer:
             self.metadatas = self.metadatas[take_count:]
             self.ids = self.ids[take_count:]
 
-    def index(self) -> None:
-        """Main execution loop that walks the directory and orchestrates processing."""
+    def run_index(self) -> None:
         print(f"Scanning {self.codebase_dir} for Python and Markdown files...")
         
         ignore_dirs = {'.git', 'venv', 'env', '__pycache__', 'node_modules', 'build', 'dist', '.pytest_cache'}
@@ -130,19 +129,10 @@ class CodebaseIndexer:
                 else:
                     continue
                 
-                # Check buffer and flush if we hit the batch limit
                 if len(self.documents) >= self.batch_size:
                     self._flush_batch()
 
-        # Flush any stragglers remaining after the loop finishes
         if self.documents:
             self._flush_batch(force_all=True)
 
         print(f"\nIndexing complete! Total chunks embedded: {self.chunk_counter}")
-
-if __name__ == "__main__":
-    indexer = CodebaseIndexer(
-        codebase_dir="vllm-0.10.1",
-        batch_size=1000
-    )
-    indexer.index()
