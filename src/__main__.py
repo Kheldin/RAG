@@ -5,6 +5,9 @@ import fire
 import dspy
 import chromadb
 import bm25s
+import subprocess
+import time
+import socket
 from chromadb.api import ClientAPI
 from chromadb.api.models.Collection import Collection
 from chromadb.api.types import Document, Metadata, ID, QueryResult, GetResult
@@ -20,10 +23,50 @@ from src.models.models import (
 from src.ingest import CodebaseIndexer
 
 
+def is_ollama_alive(host: str = "127.0.0.1", port: int = 11434) -> bool:
+    """Checks if something is listening on the local Ollama port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1.0)
+        return s.connect_ex((host, port)) == 0
+
+
 def setup_environment() -> None:
-    """Configures the default LLM for DSPy."""
+    """Launches Ollama via background subprocess if not running, then configures DSPy."""
+    model_name = "qwen3:0.6b"
+    
+    if not is_ollama_alive():
+        print("Ollama server is not running. Launching background subprocess...")
+        try:
+            # Launch ollama serve detached in the background
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid if os.name != "nt" else None  # Create process group on Unix
+            )
+            
+            # Poll port until the server is awake
+            print("Waiting for Ollama to wake up...")
+            attempts = 0
+            while not is_ollama_alive():
+                time.sleep(1)
+                attempts += 1
+                if attempts > 15:
+                    print("Error: Ollama took too long to respond. Ensure it's installed and runnable via CLI.")
+                    sys.exit(1)
+            print("Ollama server successfully launched!")
+        except FileNotFoundError:
+            print("Error: The 'ollama' executable was not found in your system PATH.")
+            sys.exit(1)
+
+    print(f"Ensuring model '{model_name}' is loaded...")
+    try:
+        subprocess.run(["ollama", "pull", model_name], check=True, stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        print(f"Warning: Failed to execute 'ollama pull {model_name}'. Proceeding anyway...")
+
     ollama_qwen = dspy.LM(
-        model="ollama/qwen3:0.6b", 
+        model=f"ollama/{model_name}", 
         api_base="http://localhost:11434", 
         api_key="none"
     )
