@@ -1,27 +1,27 @@
 import os
 import sys
 import json
-import fire
-import dspy
-import chromadb
-import bm25s
 import subprocess
 import time
 import socket
-from chromadb.api import ClientAPI
-from chromadb.api.models.Collection import Collection
-from chromadb.api.types import Document, Metadata, ID, QueryResult, GetResult
 from typing import Any, cast
 
-from src.models.models import (
-    MinimalSource,
-    MinimalSearchResults,
-    MinimalAnswer,
-    StudentSearchResults,
-    StudentSearchResultsAndAnswer,
-)
-from src.ingest import CodebaseIndexer
+import fire  # type: ignore
+import dspy  # type: ignore
+import chromadb
+import bm25s  # type: ignore
+from chromadb.api import ClientAPI
+from chromadb.api.models.Collection import Collection  # type: ignore
+from chromadb.api.types import Document, Metadata, ID, QueryResult, GetResult
 
+from src.models.models import (
+    MinimalAnswer, 
+    MinimalSearchResults, 
+    MinimalSource, 
+    AnsweredQuestion, 
+    StudentSearchResultsAndAnswer, 
+    StudentSearchResults
+)
 
 def is_ollama_alive(host: str = "127.0.0.1", port: int = 11434) -> bool:
     """Checks if something is listening on the local Ollama port."""
@@ -50,9 +50,7 @@ def setup_environment() -> None:
                 time.sleep(1)
                 attempts += 1
                 if attempts > 15:
-                    print(
-                        "Error: Ollama took too long to respond. Ensure it's installed and runnable via CLI."
-                    )
+                    print("Error: Ollama took too long to respond. Ensure it's installed.")
                     sys.exit(1)
             print("Ollama server successfully launched!")
         except FileNotFoundError:
@@ -65,11 +63,9 @@ def setup_environment() -> None:
             ["ollama", "pull", model_name], check=True, stdout=subprocess.DEVNULL
         )
     except subprocess.CalledProcessError:
-        print(
-            f"Warning: Failed to execute 'ollama pull {model_name}'. Proceeding anyway..."
-        )
+        print(f"Warning: Failed to execute 'ollama pull {model_name}'. Proceeding anyway...")
 
-    ollama_qwen = dspy.LM(
+    ollama_qwen: Any = dspy.LM(
         model=f"ollama/{model_name}", api_base="http://localhost:11434", api_key="none"
     )
     dspy.configure(lm=ollama_qwen)  # type: ignore
@@ -77,29 +73,29 @@ def setup_environment() -> None:
 
 def load_retrievers(
     chroma_path: str, collection_name: str, bm25_save_path: str = "./my_local_bm25"
-) -> tuple[Collection, bm25s.BM25]:
+) -> tuple[Collection, Any]:
     """Connects to ChromaDB and loads BM25 from disk, or builds it if missing."""
     chroma_client: ClientAPI = chromadb.PersistentClient(path=chroma_path)
-    collection: Collection = chroma_client.get_or_create_collection(
-        name=collection_name
-    )
+    collection: Collection = chroma_client.get_or_create_collection(name=collection_name)
 
     if os.path.exists(bm25_save_path):
-        bm25_retriever = bm25s.BM25.load(bm25_save_path, load_corpus=True)  # type: ignore
+        bm25_retriever: Any = bm25s.BM25.load(bm25_save_path, load_corpus=True)  # type: ignore
         return collection, bm25_retriever
 
     print("BM25 index not found on disk. Building from ChromaDB (this will be slow)...")
     all_data: GetResult = collection.get()
-    all_docs: list[Document] = all_data.get("documents") or []
-    all_metas: list[Metadata] = all_data.get("metadatas") or []
-    all_ids: list[ID] = all_data.get("ids") or []
+    
+    # Strictly handle Optionals from ChromaDB get()
+    all_docs: list[Document] = cast(list[Document], all_data.get("documents") or [])
+    all_metas: list[Metadata] = cast(list[Metadata], all_data.get("metadatas") or [])
+    all_ids: list[ID] = cast(list[ID], all_data.get("ids") or [])
 
     corpus: list[dict[str, Any]] = [
         {"id": doc_id, "text": text, "metadata": meta}
         for doc_id, text, meta in zip(all_ids, all_docs, all_metas)
     ]
 
-    corpus_tokens = bm25s.tokenize([doc["text"] for doc in corpus])  # type: ignore
+    corpus_tokens: Any = bm25s.tokenize([doc["text"] for doc in corpus])  # type: ignore
     bm25_retriever = bm25s.BM25(corpus=corpus)
     bm25_retriever.index(corpus_tokens)  # type: ignore
 
@@ -123,7 +119,7 @@ def locate_character_indices(file_path: str, chunk_text: str) -> tuple[int, int]
 
 
 def hybrid_retrieve(
-    question: str, k: int, collection: Collection, bm25_retriever: bm25s.BM25
+    question: str, k: int, collection: Collection, bm25_retriever: Any
 ) -> tuple[list[str], list[MinimalSource], list[tuple[str, str]]]:
     """Core retrieval logic that dynamically builds typed MinimalSource items."""
     vector_results: QueryResult = collection.query(query_texts=[question], n_results=k)
@@ -132,12 +128,14 @@ def hybrid_retrieve(
     raw_metas = vector_results.get("metadatas")
     raw_ids = vector_results.get("ids")
 
-    vec_docs: list[str] = raw_docs[0] if raw_docs and len(raw_docs) > 0 else []
-    vec_metas: list[Metadata] = raw_metas[0] if raw_metas and len(raw_metas) > 0 else []
-    vec_ids: list[str] = raw_ids[0] if raw_ids and len(raw_ids) > 0 else []
+    # Guard Optionals and Cast deeply nested Chroma returns
+    vec_docs: list[str] = cast(list[str], raw_docs[0]) if raw_docs is not None and len(raw_docs) > 0 else []
+    vec_metas: list[dict[str, Any]] = cast(list[dict[str, Any]], raw_metas[0]) if raw_metas is not None and len(raw_metas) > 0 else []
+    vec_ids: list[str] = cast(list[str], raw_ids[0]) if raw_ids is not None and len(raw_ids) > 0 else []
 
-    query_tokens = bm25s.tokenize(question)  # type: ignore
-    bm25_results, _ = bm25_retriever.retrieve(query_tokens, k=k)  # type: ignore
+    query_tokens: Any = bm25s.tokenize(question)  # type: ignore
+    retrieval_output: Any = bm25_retriever.retrieve(query_tokens, k=k)  # type: ignore
+    bm25_results: list[dict[str, Any]] = cast(list[dict[str, Any]], retrieval_output[0][0]) if retrieval_output else []
 
     combined_raw_data: list[tuple[str, str, dict[str, Any]]] = []
     seen_ids: set[str] = set()
@@ -148,15 +146,15 @@ def hybrid_retrieve(
             meta_dict = cast(dict[str, Any], meta) if meta else {}
             combined_raw_data.append((doc_id, text, meta_dict))
 
-    for match in bm25_results[0]:  # type: ignore
-        doc_id = cast(str, match["id"])
-        if doc_id not in seen_ids:
-            seen_ids.add(doc_id)
+    for match in bm25_results:
+        doc_id_match = cast(str, match.get("id", ""))
+        if doc_id_match and doc_id_match not in seen_ids:
+            seen_ids.add(doc_id_match)
             combined_raw_data.append(
                 (
-                    doc_id,
-                    cast(str, match["text"]),
-                    cast(dict[str, Any], match["metadata"]),
+                    doc_id_match,
+                    cast(str, match.get("text", "")),
+                    cast(dict[str, Any], match.get("metadata", {})),
                 )
             )
 
@@ -166,12 +164,12 @@ def hybrid_retrieve(
     minimal_sources: list[MinimalSource] = []
     rag_context_tuples: list[tuple[str, str]] = []
 
-    for _, text, meta in combined_raw_data:
-        file_path = str(meta.get("source", "Unknown file"))
-        start_idx, end_idx = locate_character_indices(file_path, text)
+    for _, text_val, meta_val in combined_raw_data:
+        file_path = str(meta_val.get("source", "Unknown file"))
+        start_idx, end_idx = locate_character_indices(file_path, text_val)
 
-        context_texts.append(text)
-        rag_context_tuples.append((file_path, text))
+        context_texts.append(text_val)
+        rag_context_tuples.append((file_path, text_val))
         minimal_sources.append(
             MinimalSource(
                 file_path=file_path,
@@ -183,20 +181,20 @@ def hybrid_retrieve(
     return context_texts, minimal_sources, rag_context_tuples
 
 
-class CodebaseRAG(dspy.Module):
+class CodebaseRAG(dspy.Module):  # type: ignore
     """Hybrid Retrieval-Augmented Generation module for codebase querying."""
 
-    def __init__(self, collection: Collection, bm25_retriever: bm25s.BM25) -> None:
-        super().__init__()  # type: ignore
-        self.collection = collection
-        self.bm25_retriever = bm25_retriever
+    def __init__(self, collection: Collection, bm25_retriever: Any) -> None:
+        super().__init__()
+        self.collection: Collection = collection
+        self.bm25_retriever: Any = bm25_retriever
 
-        self.generate_answer = dspy.ChainOfThought(
+        self.generate_answer: Any = dspy.ChainOfThought(
             "context, question -> answer",
-            instructions="Answer the question using the provided codebase context. Explicitly mention the file names you used from the context headers.",  # type: ignore
+            instructions="Answer the question using the provided codebase context. Explicitly mention the file names you used from the context headers.",
         )
 
-    def forward(self, question: str, k: int = 3) -> dspy.Prediction:
+    def forward(self, question: str, k: int = 3) -> Any:
         context_texts, minimal_sources, combined_chunks = hybrid_retrieve(
             question, k, self.collection, self.bm25_retriever
         )
@@ -206,13 +204,13 @@ class CodebaseRAG(dspy.Module):
         ]
         context_str: str = "\n".join(formatted_context_list)
 
-        prediction = self.generate_answer(context=context_str, question=question)  # type: ignore
+        prediction: Any = self.generate_answer(context=context_str, question=question)
 
         return dspy.Prediction(
             context=context_texts,
             sources=minimal_sources,
-            reasoning=getattr(prediction, "reasoning", ""),
-            answer=getattr(prediction, "answer", ""),
+            reasoning=str(getattr(prediction, "reasoning", "")),
+            answer=str(getattr(prediction, "answer", "")),
         )
 
 
@@ -220,10 +218,10 @@ class CLICommands:
     """Exposes methods directly as command-line interfaces using Google Fire."""
 
     def answer(
-        self,
-        question: str,
-        k: int = 3,
-        save_directory: str = "data/output/search_results_and_answer",
+        self, 
+        question: str, 
+        k: int = 3, 
+        save_directory: str = "data/output/search_results_and_answer"
     ) -> None:
         setup_environment()
         chroma_col, bm25_idx = load_retrievers(
@@ -231,42 +229,42 @@ class CLICommands:
         )
 
         rag_bot = CodebaseRAG(collection=chroma_col, bm25_retriever=bm25_idx)
-        result = rag_bot(question=question, k=k)
+        result: Any = rag_bot(question=question, k=k)
 
-        # Extract textual answer string
         answer_text = str(getattr(result, "answer", ""))
 
         answer_res = MinimalAnswer(
             question_id="single_query",
             question=question,
-            retrieved_sources=getattr(result, "sources", []),
+            retrieved_sources=cast(list[MinimalSource], getattr(result, "sources", [])),
             answer=answer_text,
         )
 
-        # Complies with updated V.9 schema model
-        output_payload = StudentSearchResultsAndAnswer(search_results=[answer_res], k=k)
+        output_payload = StudentSearchResultsAndAnswer(
+            search_results=[answer_res], 
+            k=k
+        )
 
-        # Display answer purely in the terminal interface
         print("\n" + "=" * 40)
         print("ANSWER:")
         print("=" * 40)
         print(answer_text)
         print("=" * 40 + "\n")
 
-        # Persist full JSON structure configuration output
         os.makedirs(save_directory, exist_ok=True)
         timestamp = int(time.time())
         save_path = os.path.join(save_directory, f"single_answer_{timestamp}.json")
-
+        
         with open(save_path, "w", encoding="utf-8") as f:
             f.write(output_payload.model_dump_json(indent=4))
-
+            
         print(f"Saved payload structure to {save_path}")
 
     def index(
         self, codebase_dir: str = "vllm-0.10.1", max_chunk_size: int = 1000
     ) -> None:
-        indexer = CodebaseIndexer(
+        from src.ingest import CodebaseIndexer  # type: ignore
+        indexer: Any = CodebaseIndexer(
             codebase_dir=codebase_dir, max_chunk_size=max_chunk_size
         )
         indexer.run_index()
@@ -289,7 +287,7 @@ class CLICommands:
             return
 
         with open(dataset_path, "r", encoding="utf-8") as f:
-            raw_data = json.load(f)
+            raw_data: Any = json.load(f)
 
         questions_list: list[dict[str, Any]] = []
         if isinstance(raw_data, dict):
@@ -343,13 +341,11 @@ class CLICommands:
         save_directory: str = "data/output/search_results_and_answer",
     ) -> None:
         if not os.path.exists(student_search_results_path):
-            print(
-                f"Error: Search results file not found at {student_search_results_path}"
-            )
+            print(f"Error: Search results file not found at {student_search_results_path}")
             return
 
         with open(student_search_results_path, "r", encoding="utf-8") as f:
-            raw_data = json.load(f)
+            raw_data: Any = json.load(f)
 
         try:
             search_data = StudentSearchResults.model_validate(raw_data)
@@ -365,37 +361,31 @@ class CLICommands:
 
         setup_environment()
 
-        generator = dspy.ChainOfThought(
+        generator: Any = dspy.ChainOfThought(
             "context, question -> answer",
-            instructions="Answer the question using the provided codebase context. Explicitly mention the file names you used from the context headers.",  # type: ignore
+            instructions="Answer the question using the provided codebase context. Explicitly mention the file names you used from the context headers.",
         )
 
         minimal_answers_list: list[MinimalAnswer] = []
         file_content_cache: dict[str, str] = {}
 
         for idx, item in enumerate(questions_list, 1):
-            context_chunks = []
+            context_chunks: list[str] = []
             for src in item.retrieved_sources:
                 if src.file_path not in file_content_cache:
                     try:
-                        with open(
-                            src.file_path, "r", encoding="utf-8", errors="ignore"
-                        ) as f:
+                        with open(src.file_path, "r", encoding="utf-8", errors="ignore") as f:
                             file_content_cache[src.file_path] = f.read()
                     except Exception:
                         file_content_cache[src.file_path] = ""
 
                 content = file_content_cache[src.file_path]
                 if content:
-                    chunk_text = content[
-                        src.first_character_index : src.last_character_index
-                    ]
-                    context_chunks.append(
-                        f"--- File: {src.file_path} ---\n{chunk_text}\n"
-                    )
+                    chunk_text = content[src.first_character_index : src.last_character_index]
+                    context_chunks.append(f"--- File: {src.file_path} ---\n{chunk_text}\n")
 
             context_str = "\n".join(context_chunks)
-            prediction = generator(context=context_str, question=item.question)  # type: ignore
+            prediction: Any = generator(context=context_str, question=item.question)
             answer_text = str(getattr(prediction, "answer", ""))
 
             minimal_answers_list.append(
@@ -412,21 +402,99 @@ class CLICommands:
 
         print()
 
-        # Compies with updated V.9 schema model payload layout
         final_output_model = StudentSearchResultsAndAnswer(
             search_results=minimal_answers_list,
             k=k,
         )
 
         os.makedirs(save_directory, exist_ok=True)
-        save_path = os.path.join(
-            save_directory, os.path.basename(student_search_results_path)
-        )
+        save_path = os.path.join(save_directory, os.path.basename(student_search_results_path))
 
         with open(save_path, "w", encoding="utf-8") as f:
             f.write(final_output_model.model_dump_json(indent=4))
 
         print(f"Saved student_search_results_and_answer to {save_path}")
+
+    def evaluate_dataset(self, dataset_path: str, k: int = 5) -> None:
+        """
+        Computes Recall@k using a minimum 5% character segment overlap rule.
+        """
+        if not os.path.exists(dataset_path):
+            print(f"Error: Evaluation dataset target path missing: {dataset_path}")
+            return
+
+        with open(dataset_path, "r", encoding="utf-8") as f:
+            raw_data: Any = json.load(f)
+
+        try:
+            from src.models.models import RagDataset
+            dataset_model = RagDataset.model_validate(raw_data)
+        except Exception as e:
+            print(f"Error validation loading RagDataset schema structure: {e}")
+            return
+
+        # STRICT TYPING FIX: Use isinstance instead of hasattr for reliable type narrowing
+        questions = [q for q in dataset_model.rag_questions if isinstance(q, AnsweredQuestion)]
+        
+        if not questions:
+            print("No ground truth answered questions containing source keys found.")
+            return
+
+        chroma_col, bm25_idx = load_retrievers(
+            chroma_path="./my_local_chromadb", collection_name="codebase_chunks"
+        )
+
+        total_recall_score = 0.0
+        processed_count = 0
+
+        print(f"Beginning Recall@{k} evaluation across {len(questions)} items...")
+
+        for q in questions:
+            _, retrieved_sources, _ = hybrid_retrieve(
+                question=q.question, k=k, collection=chroma_col, bm25_retriever=bm25_idx
+            )
+
+            correct_sources = q.sources
+            if not correct_sources:
+                continue
+
+            found_sources_count = 0
+
+            for correct in correct_sources:
+                correct_len = correct.last_character_index - correct.first_character_index
+                if correct_len <= 0:
+                    continue
+
+                is_found = False
+                for retrieved in retrieved_sources:
+                    if retrieved.file_path != correct.file_path:
+                        continue
+
+                    overlap_start = max(retrieved.first_character_index, correct.first_character_index)
+                    overlap_end = min(retrieved.last_character_index, correct.last_character_index)
+                    overlap_len = max(0, overlap_end - overlap_start)
+
+                    if (overlap_len / correct_len) >= 0.05:
+                        is_found = True
+                        break
+
+                if is_found:
+                    found_sources_count += 1
+
+            question_score = found_sources_count / len(correct_sources)
+            total_recall_score += question_score
+            processed_count += 1
+
+        average_recall = (total_recall_score / processed_count) * 100 if processed_count > 0 else 0.0
+        
+        print("\n" + "=" * 40)
+        print(f"EVALUATION METRIC PERFORMANCE REPORT:")
+        print("=" * 40)
+        print(f"Total Questions Evaluated : {processed_count}")
+        print(f"Calculated Recall@{k}      : {average_recall:.2f}%")
+        print("=" * 40)
+        print(f"Target Threshold Metrics (Recall@5): Docs >= 80% | Code >= 50%")
+        print("=" * 40 + "\n")
 
 
 if __name__ == "__main__":
