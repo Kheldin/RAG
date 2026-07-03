@@ -219,7 +219,12 @@ class CodebaseRAG(dspy.Module):
 class CLICommands:
     """Exposes methods directly as command-line interfaces using Google Fire."""
 
-    def answer(self, question: str, k: int = 3) -> None:
+    def answer(
+        self,
+        question: str,
+        k: int = 3,
+        save_directory: str = "data/output/search_results_and_answer",
+    ) -> None:
         setup_environment()
         chroma_col, bm25_idx = load_retrievers(
             chroma_path="./my_local_chromadb", collection_name="codebase_chunks"
@@ -228,22 +233,35 @@ class CLICommands:
         rag_bot = CodebaseRAG(collection=chroma_col, bm25_retriever=bm25_idx)
         result = rag_bot(question=question, k=k)
 
-        search_res = MinimalSearchResults(
-            question_id="single_query",
-            question=question,
-            retrieved_sources=getattr(result, "sources", []),
-        )
+        # Extract textual answer string
+        answer_text = str(getattr(result, "answer", ""))
+
         answer_res = MinimalAnswer(
             question_id="single_query",
             question=question,
             retrieved_sources=getattr(result, "sources", []),
-            answer=getattr(result, "answer", ""),
+            answer=answer_text,
         )
 
-        output_payload = StudentSearchResultsAndAnswer(
-            search_results=[search_res], search_results_and_answer=[answer_res], k=k
-        )
-        print(output_payload.model_dump_json(indent=4))
+        # Complies with updated V.9 schema model
+        output_payload = StudentSearchResultsAndAnswer(search_results=[answer_res], k=k)
+
+        # Display answer purely in the terminal interface
+        print("\n" + "=" * 40)
+        print("ANSWER:")
+        print("=" * 40)
+        print(answer_text)
+        print("=" * 40 + "\n")
+
+        # Persist full JSON structure configuration output
+        os.makedirs(save_directory, exist_ok=True)
+        timestamp = int(time.time())
+        save_path = os.path.join(save_directory, f"single_answer_{timestamp}.json")
+
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(output_payload.model_dump_json(indent=4))
+
+        print(f"Saved payload structure to {save_path}")
 
     def index(
         self, codebase_dir: str = "vllm-0.10.1", max_chunk_size: int = 1000
@@ -394,9 +412,9 @@ class CLICommands:
 
         print()
 
+        # Compies with updated V.9 schema model payload layout
         final_output_model = StudentSearchResultsAndAnswer(
-            search_results=cast(list[MinimalSearchResults], minimal_answers_list),
-            search_results_and_answer=minimal_answers_list,
+            search_results=minimal_answers_list,
             k=k,
         )
 
