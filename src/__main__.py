@@ -71,6 +71,26 @@ def setup_environment() -> None:
     dspy.configure(lm=ollama_qwen)  # type: ignore
 
 
+def normalize_path(path: str) -> str:
+    """Strips any root codebase directory prefixes so paths conform to validation formats."""
+    path = path.replace("\\", "/")
+    prefixes = ["vllm-0.10.1/", "./vllm-0.10.1/"]
+    for prefix in prefixes:
+        if path.startswith(prefix):
+            return path[len(prefix):]
+    return path
+
+
+def get_real_path(normalized_path: str, codebase_dir: str = "vllm-0.10.1") -> str:
+    """Ensures a valid disk-location target path for locating text chunk string segments."""
+    if os.path.exists(normalized_path):
+        return normalized_path
+    joined = os.path.join(codebase_dir, normalized_path)
+    if os.path.exists(joined):
+        return joined
+    return normalized_path
+
+
 def load_retrievers(
     chroma_path: str, collection_name: str, bm25_save_path: str = "./my_local_bm25"
 ) -> tuple[Collection, Any]:
@@ -85,7 +105,6 @@ def load_retrievers(
     print("BM25 index not found on disk. Building from ChromaDB (this will be slow)...")
     all_data: GetResult = collection.get()
     
-    # Strictly handle Optionals from ChromaDB get()
     all_docs: list[Document] = cast(list[Document], all_data.get("documents") or [])
     all_metas: list[Metadata] = cast(list[Metadata], all_data.get("metadatas") or [])
     all_ids: list[ID] = cast(list[ID], all_data.get("ids") or [])
@@ -112,7 +131,12 @@ def locate_character_indices(file_path: str, chunk_text: str) -> tuple[int, int]
             content = f.read()
         start_idx = content.find(chunk_text)
         if start_idx == -1:
-            return 0, len(chunk_text)
+            # Fallback handling windows carriage-return string alignments
+            content_norm = content.replace("\r", "")
+            chunk_norm = chunk_text.replace("\r", "")
+            start_idx = content_norm.find(chunk_norm)
+            if start_idx == -1:
+                return 0, len(chunk_text)
         return start_idx, start_idx + len(chunk_text)
     except Exception:
         return 0, len(chunk_text)
@@ -128,7 +152,6 @@ def hybrid_retrieve(
     raw_metas = vector_results.get("metadatas")
     raw_ids = vector_results.get("ids")
 
-    # Guard Optionals and Cast deeply nested Chroma returns
     vec_docs: list[str] = cast(list[str], raw_docs[0]) if raw_docs is not None and len(raw_docs) > 0 else []
     vec_metas: list[dict[str, Any]] = cast(list[dict[str, Any]], raw_metas[0]) if raw_metas is not None and len(raw_metas) > 0 else []
     vec_ids: list[str] = cast(list[str], raw_ids[0]) if raw_ids is not None and len(raw_ids) > 0 else []
@@ -165,14 +188,17 @@ def hybrid_retrieve(
     rag_context_tuples: list[tuple[str, str]] = []
 
     for _, text_val, meta_val in combined_raw_data:
-        file_path = str(meta_val.get("source", "Unknown file"))
-        start_idx, end_idx = locate_character_indices(file_path, text_val)
+        raw_path = str(meta_val.get("source", "Unknown file"))
+        clean_path = normalize_path(raw_path)
+        real_path = get_real_path(clean_path)
+
+        start_idx, end_idx = locate_character_indices(real_path, text_val)
 
         context_texts.append(text_val)
-        rag_context_tuples.append((file_path, text_val))
+        rag_context_tuples.append((clean_path, text_val))
         minimal_sources.append(
             MinimalSource(
-                file_path=file_path,
+                file_path=clean_path,
                 first_character_index=start_idx,
                 last_character_index=end_idx,
             )
@@ -374,7 +400,8 @@ class CLICommands:
             for src in item.retrieved_sources:
                 if src.file_path not in file_content_cache:
                     try:
-                        with open(src.file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        real_p = get_real_path(src.file_path)
+                        with open(real_p, "r", encoding="utf-8", errors="ignore") as f:
                             file_content_cache[src.file_path] = f.read()
                     except Exception:
                         file_content_cache[src.file_path] = ""
@@ -391,7 +418,7 @@ class CLICommands:
             minimal_answers_list.append(
                 MinimalAnswer(
                     question_id=item.question_id,
-                    question_str=item.question,
+                    question_str=item.question_str,  # Fixed property assignment to match schemas
                     retrieved_sources=item.retrieved_sources,
                     answer=answer_text,
                 )
@@ -415,9 +442,10 @@ class CLICommands:
 
         print(f"Saved student_search_results_and_answer to {save_path}")
 
-    def evaluate_dataset(self, dataset_path: str, k: int = 5) -> None:
+    def evaluate(self, dataset_path: str, k: int = 5) -> None:
         """
-        Computes Recall@k using a minimum 5% character segment overlap rule.
+        VI.1 Evaluation metrics implementation.
+        Computes Recall@k checking how much the retrieved sources overlap with the correct sources.
         """
         if not os.path.exists(dataset_path):
             print(f"Error: Evaluation dataset target path missing: {dataset_path}")
@@ -466,13 +494,15 @@ class CLICommands:
 
                 is_found = False
                 for retrieved in retrieved_sources:
-                    if retrieved.file_path != correct.file_path:
+                    # Explicit string verification tracking match requirements
+                    if normalize_path(retrieved.file_path) != normalize_path(correct.file_path):
                         continue
 
                     overlap_start = max(retrieved.first_character_index, correct.first_character_index)
                     overlap_end = min(retrieved.last_character_index, correct.last_character_index)
                     overlap_len = max(0, overlap_end - overlap_start)
 
+                    # VI.1.1 condition threshold match check (>= 5% overlap metric)
                     if (overlap_len / correct_len) >= 0.05:
                         is_found = True
                         break
@@ -480,6 +510,7 @@ class CLICommands:
                 if is_found:
                     found_sources_count += 1
 
+            # Metric rule: score = number_found / total_number_of_correct_sources
             question_score = found_sources_count / len(correct_sources)
             total_recall_score += question_score
             processed_count += 1
