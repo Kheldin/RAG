@@ -235,7 +235,7 @@ class CLICommands:
 
         answer_res = MinimalAnswer(
             question_id="single_query",
-            question=question,
+            question_str=question,
             retrieved_sources=cast(list[MinimalSource], getattr(result, "sources", [])),
             answer=answer_text,
         )
@@ -321,7 +321,7 @@ class CLICommands:
             )
             search_results_list.append(
                 MinimalSearchResults(
-                    question_id=q_id, question=q_text, retrieved_sources=minimal_sources
+                    question_id=q_id, question_str=q_text, retrieved_sources=minimal_sources
                 )
             )
 
@@ -385,13 +385,13 @@ class CLICommands:
                     context_chunks.append(f"--- File: {src.file_path} ---\n{chunk_text}\n")
 
             context_str = "\n".join(context_chunks)
-            prediction: Any = generator(context=context_str, question=item.question)
+            prediction: Any = generator(context=context_str, question=item.question_str)
             answer_text = str(getattr(prediction, "answer", ""))
 
             minimal_answers_list.append(
                 MinimalAnswer(
                     question_id=item.question_id,
-                    question=item.question,
+                    question_str=item.question,
                     retrieved_sources=item.retrieved_sources,
                     answer=answer_text,
                 )
@@ -433,7 +433,6 @@ class CLICommands:
             print(f"Error validation loading RagDataset schema structure: {e}")
             return
 
-        # STRICT TYPING FIX: Use isinstance instead of hasattr for reliable type narrowing
         questions = [q for q in dataset_model.rag_questions if isinstance(q, AnsweredQuestion)]
         
         if not questions:
