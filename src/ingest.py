@@ -1,4 +1,3 @@
-# src/ingest.py
 import os
 import torch
 import chromadb
@@ -21,13 +20,16 @@ class CodebaseIndexer:
         self, 
         codebase_dir: str, 
         max_chunk_size: int = 1000,
-        chroma_path: str = "./my_local_chromadb", 
+        chroma_path: str = "data/processed/chunks",
         collection_name: str = "codebase_chunks",
         embedding_model_name: str = "all-MiniLM-L6-v2",
         batch_size: int = 1000
     ):
         self.codebase_dir = codebase_dir
         self.batch_size = batch_size
+        
+        # Ensure the directory exists before initializing ChromaDB
+        os.makedirs(chroma_path, exist_ok=True)
         
         self.chroma_client: ClientAPI = chromadb.PersistentClient(path=chroma_path)
         self.collection: Collection = self.chroma_client.get_or_create_collection(name=collection_name)

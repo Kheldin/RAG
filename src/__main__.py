@@ -92,9 +92,12 @@ def get_real_path(normalized_path: str, codebase_dir: str = "vllm-0.10.1") -> st
 
 
 def load_retrievers(
-    chroma_path: str, collection_name: str, bm25_save_path: str = "./my_local_bm25"
+    chroma_path: str = "data/processed/chunks", 
+    collection_name: str = "codebase_chunks", 
+    bm25_save_path: str = "data/processed/bm25_index"
 ) -> tuple[Collection, Any]:
     """Connects to ChromaDB and loads BM25 from disk, or builds it if missing."""
+    os.makedirs(chroma_path, exist_ok=True)
     chroma_client: ClientAPI = chromadb.PersistentClient(path=chroma_path)
     collection: Collection = chroma_client.get_or_create_collection(name=collection_name)
 
@@ -109,15 +112,20 @@ def load_retrievers(
     all_metas: list[Metadata] = cast(list[Metadata], all_data.get("metadatas") or [])
     all_ids: list[ID] = cast(list[ID], all_data.get("ids") or [])
 
-    corpus: list[dict[str, Any]] = [
-        {"id": doc_id, "text": text, "metadata": meta}
-        for doc_id, text, meta in zip(all_ids, all_docs, all_metas)
-    ]
+    if not all_docs:
+        print("WARNING: ChromaDB is empty! BM25 will have no corpus.")
+        corpus = [{"id": "dummy", "text": "dummy", "metadata": {}}]
+    else:
+        corpus = [
+            {"id": doc_id, "text": text, "metadata": meta}
+            for doc_id, text, meta in zip(all_ids, all_docs, all_metas)
+        ]
 
     corpus_tokens: Any = bm25s.tokenize([doc["text"] for doc in corpus])  # type: ignore
     bm25_retriever = bm25s.BM25(corpus=corpus)
     bm25_retriever.index(corpus_tokens)  # type: ignore
 
+    os.makedirs(os.path.dirname(bm25_save_path), exist_ok=True)
     bm25_retriever.save(bm25_save_path, corpus=corpus)  # type: ignore
     return collection, bm25_retriever
 
@@ -192,7 +200,13 @@ def hybrid_retrieve(
         clean_path = normalize_path(raw_path)
         real_path = get_real_path(clean_path)
 
-        start_idx, end_idx = locate_character_indices(real_path, text_val)
+        start_meta = meta_val.get("first_character_index")
+        end_meta = meta_val.get("last_character_index")
+
+        if start_meta is not None and end_meta is not None:
+            start_idx, end_idx = int(start_meta), int(end_meta)
+        else:
+            start_idx, end_idx = locate_character_indices(real_path, text_val)
 
         context_texts.append(text_val)
         rag_context_tuples.append((clean_path, text_val))
@@ -240,6 +254,68 @@ class CodebaseRAG(dspy.Module):  # type: ignore
         )
 
 
+class Recall:
+    """Compute retrieval recall from source span overlaps."""
+
+    def __init__(self) -> None:
+        """Initialize recall calculator."""
+        pass
+
+    def _overlap_proccess(
+        self,
+        retrieved: MinimalSource,
+        expected: MinimalSource
+    ) -> float:
+        """Compute normalized overlap between retrieved and expected spans."""
+        if normalize_path(retrieved.file_path) != normalize_path(expected.file_path):
+            return 0.0
+            
+        start_inter = max(
+            retrieved.first_character_index,
+            expected.first_character_index
+        )
+        end_inter = min(
+            retrieved.last_character_index,
+            expected.last_character_index
+        )
+        overlap_length = max(0, end_inter - start_inter)
+        expected_length = (
+            expected.last_character_index -
+            expected.first_character_index
+        )
+        
+        if expected_length == 0:
+            return 0.0
+            
+        return overlap_length / expected_length
+
+    def calculate(
+        self, 
+        retrieved_sources: list[list[MinimalSource]],
+        expected_sources: list[MinimalSource], 
+        k: int
+    ) -> float:
+        """Calculate recall at `k` using minimum overlap threshold."""
+        sources_found = 0
+        for idx, expct in enumerate(expected_sources):
+            if idx >= len(retrieved_sources):
+                continue
+                
+            top_retrieved_sources = retrieved_sources[idx][:k]
+
+            for retriev in top_retrieved_sources:
+                overlap = self._overlap_proccess(retriev, expct)
+                if overlap >= 0.05:
+                    sources_found += 1
+                    break
+
+        if not expected_sources:
+            return 0.0
+
+        recall_score = sources_found / len(expected_sources)
+        return recall_score
+
+
 class CLICommands:
     """Exposes methods directly as command-line interfaces using Google Fire."""
 
@@ -250,9 +326,7 @@ class CLICommands:
         save_directory: str = "data/output/search_results_and_answer"
     ) -> None:
         setup_environment()
-        chroma_col, bm25_idx = load_retrievers(
-            chroma_path="./my_local_chromadb", collection_name="codebase_chunks"
-        )
+        chroma_col, bm25_idx = load_retrievers()
 
         rag_bot = CodebaseRAG(collection=chroma_col, bm25_retriever=bm25_idx)
         result: Any = rag_bot(question=question, k=k)
@@ -287,7 +361,7 @@ class CLICommands:
         print(f"Saved payload structure to {save_path}")
 
     def index(
-        self, codebase_dir: str = "vllm-0.10.1", max_chunk_size: int = 1000
+        self, codebase_dir: str = "data/raw/vllm-0.10.1", max_chunk_size: int = 1000
     ) -> None:
         from src.ingest import CodebaseIndexer  # type: ignore
         indexer: Any = CodebaseIndexer(
@@ -296,11 +370,7 @@ class CLICommands:
         indexer.run_index()
 
         print("Pre-building and saving BM25 index to disk...")
-        _, _ = load_retrievers(
-            chroma_path="./my_local_chromadb",
-            collection_name="codebase_chunks",
-            bm25_save_path="./my_local_bm25",
-        )
+        _, _ = load_retrievers()
 
     def search_dataset(
         self,
@@ -323,15 +393,17 @@ class CLICommands:
             )
         elif isinstance(raw_data, list):
             questions_list = cast(list[dict[str, Any]], raw_data)
-        else:
-            return
-
+            
         if not questions_list:
+            print(f"Error: No questions found inside the JSON at {dataset_path}")
             return
 
-        chroma_col, bm25_idx = load_retrievers(
-            chroma_path="./my_local_chromadb", collection_name="codebase_chunks"
-        )
+        try:
+            chroma_col, bm25_idx = load_retrievers()
+        except Exception as e:
+            print(f"CRITICAL ERROR loading databases: {e}")
+            return
+
         search_results_list: list[MinimalSearchResults] = []
 
         for item in questions_list:
@@ -342,9 +414,14 @@ class CLICommands:
             if not q_text:
                 continue
 
-            _, minimal_sources, _ = hybrid_retrieve(
-                question=q_text, k=k, collection=chroma_col, bm25_retriever=bm25_idx
-            )
+            try:
+                _, minimal_sources, _ = hybrid_retrieve(
+                    question=q_text, k=k, collection=chroma_col, bm25_retriever=bm25_idx
+                )
+            except Exception as e:
+                print(f"Retrieval error on question {q_id}: {e}")
+                minimal_sources = []
+                
             search_results_list.append(
                 MinimalSearchResults(
                     question_id=q_id, question_str=q_text, retrieved_sources=minimal_sources
@@ -418,7 +495,7 @@ class CLICommands:
             minimal_answers_list.append(
                 MinimalAnswer(
                     question_id=item.question_id,
-                    question_str=item.question_str,  # Fixed property assignment to match schemas
+                    question_str=item.question_str,
                     retrieved_sources=item.retrieved_sources,
                     answer=answer_text,
                 )
@@ -442,89 +519,83 @@ class CLICommands:
 
         print(f"Saved student_search_results_and_answer to {save_path}")
 
-    def evaluate(self, dataset_path: str, k: int = 5) -> None:
+    def evaluate_student_search_results(
+        self,
+        student_answer_path: str,
+        dataset_path: str,
+        k: int = 10,
+        max_context_length: int = 2000
+    ) -> None:
         """
-        VI.1 Evaluation metrics implementation.
-        Computes Recall@k checking how much the retrieved sources overlap with the correct sources.
+        Mimics the school's Moulinette evaluator directly within the CLI.
+        Calculates Recall@1, 3, 5, and 10 based on the 5% overlap rule.
         """
         if not os.path.exists(dataset_path):
-            print(f"Error: Evaluation dataset target path missing: {dataset_path}")
+            print(f"Error: Dataset path missing: {dataset_path}")
+            return
+        if not os.path.exists(student_answer_path):
+            print(f"Error: Student answer path missing: {student_answer_path}")
             return
 
         with open(dataset_path, "r", encoding="utf-8") as f:
-            raw_data: Any = json.load(f)
+            raw_dataset: Any = json.load(f)
+            
+        with open(student_answer_path, "r", encoding="utf-8") as f:
+            raw_student_data: Any = json.load(f)
 
         try:
             from src.models.models import RagDataset
-            dataset_model = RagDataset.model_validate(raw_data)
+            dataset = RagDataset.model_validate(raw_dataset)
+            student_search = StudentSearchResults.model_validate(raw_student_data)
         except Exception as e:
-            print(f"Error validation loading RagDataset schema structure: {e}")
+            print(f"Error validating JSON against Pydantic schema: {e}")
             return
 
-        questions = [q for q in dataset_model.rag_questions if isinstance(q, AnsweredQuestion)]
+        print("Student data is valid: True")
         
-        if not questions:
-            print("No ground truth answered questions containing source keys found.")
-            return
-
-        chroma_col, bm25_idx = load_retrievers(
-            chroma_path="./my_local_chromadb", collection_name="codebase_chunks"
+        student_search_map = {
+            res.question_id: res for res in student_search.search_results
+        }
+        
+        valid_gt_questions = [
+            q for q in dataset.rag_questions 
+            if isinstance(q, AnsweredQuestion) and len(q.sources) > 0
+        ]
+        
+        total_questions = len(dataset.rag_questions)
+        total_with_sources = len(valid_gt_questions)
+        
+        questions_with_student_sources = sum(
+            1 for q in valid_gt_questions 
+            if q.question_id in student_search_map 
+            and len(student_search_map[q.question_id].retrieved_sources) > 0
         )
 
-        total_recall_score = 0.0
-        processed_count = 0
+        print(f"Total number of questions: {total_questions}")
+        print(f"Total number of questions with sources: {total_with_sources}")
+        print(f"Total number of questions with student sources: {questions_with_student_sources}")
 
-        print(f"Beginning Recall@{k} evaluation across {len(questions)} items...")
+        flat_expected: list[MinimalSource] = []
+        flat_retrieved: list[list[MinimalSource]] = []
 
-        for q in questions:
-            _, retrieved_sources, _ = hybrid_retrieve(
-                question=q.question, k=k, collection=chroma_col, bm25_retriever=bm25_idx
-            )
+        for q in valid_gt_questions:
+            student_res = student_search_map.get(q.question_id)
+            retrieved_list = student_res.retrieved_sources if student_res else []
+            
+            for expct in q.sources:
+                flat_expected.append(expct)
+                flat_retrieved.append(retrieved_list)
 
-            correct_sources = q.sources
-            if not correct_sources:
-                continue
-
-            found_sources_count = 0
-
-            for correct in correct_sources:
-                correct_len = correct.last_character_index - correct.first_character_index
-                if correct_len <= 0:
-                    continue
-
-                is_found = False
-                for retrieved in retrieved_sources:
-                    # Explicit string verification tracking match requirements
-                    if normalize_path(retrieved.file_path) != normalize_path(correct.file_path):
-                        continue
-
-                    overlap_start = max(retrieved.first_character_index, correct.first_character_index)
-                    overlap_end = min(retrieved.last_character_index, correct.last_character_index)
-                    overlap_len = max(0, overlap_end - overlap_start)
-
-                    # VI.1.1 condition threshold match check (>= 5% overlap metric)
-                    if (overlap_len / correct_len) >= 0.05:
-                        is_found = True
-                        break
-
-                if is_found:
-                    found_sources_count += 1
-
-            # Metric rule: score = number_found / total_number_of_correct_sources
-            question_score = found_sources_count / len(correct_sources)
-            total_recall_score += question_score
-            processed_count += 1
-
-        average_recall = (total_recall_score / processed_count) * 100 if processed_count > 0 else 0.0
+        recall_evaluator = Recall()
+        cutoffs = [1, 3, 5, 10]
         
-        print("\n" + "=" * 40)
-        print(f"EVALUATION METRIC PERFORMANCE REPORT:")
+        print("\nEvaluation Results")
         print("=" * 40)
-        print(f"Total Questions Evaluated : {processed_count}")
-        print(f"Calculated Recall@{k}      : {average_recall:.2f}%")
-        print("=" * 40)
-        print(f"Target Threshold Metrics (Recall@5): Docs >= 80% | Code >= 50%")
-        print("=" * 40 + "\n")
+        print(f"Questions evaluated: {total_with_sources}")
+
+        for c in cutoffs:
+            score = recall_evaluator.calculate(flat_retrieved, flat_expected, c)
+            print(f"Recall@{c}: {score:.3f}")
 
 
 if __name__ == "__main__":
