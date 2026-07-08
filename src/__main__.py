@@ -9,6 +9,7 @@ from typing import Any, cast
 import fire  # type: ignore
 import dspy  # type: ignore
 import bm25s  # type: ignore
+import re
 
 from src.models.models import (
     MinimalAnswer, 

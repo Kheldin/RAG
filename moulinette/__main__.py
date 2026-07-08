@@ -45,6 +45,7 @@ class Recall:
             retrieved.last_character_index,
             expected.last_character_index
         )
+        
         overlap_length = max(0, end_inter - start_inter)
         expected_length = (
             expected.last_character_index -
@@ -52,36 +53,35 @@ class Recall:
         )
         
         # Condition threshold match check (>= 5% overlap metric)
-        if expected_length == 0:
+        # Using <= 0 just to be mathematically safe against malformed spans
+        if expected_length <= 0:
             return 0.0
             
         return overlap_length / expected_length
 
-    def calculate(
+    def calculate_question_recall(
         self, 
-        retrieved_sources: list[list[MinimalSource]],
+        retrieved_sources: list[MinimalSource],
         expected_sources: list[MinimalSource], 
         k: int
     ) -> float:
-        """Calculate recall at `k` using minimum overlap threshold."""
-        sources_found = 0
-        for idx, expct in enumerate(expected_sources):
-            if idx >= len(retrieved_sources):
-                continue
-                
-            top_retrieved_sources = retrieved_sources[idx][:k]
-
-            for retriev in top_retrieved_sources:
-                overlap = self._overlap_proccess(retriev, expct)
-                if overlap >= 0.05:
-                    sources_found += 1
-                    break
-
+        """Calculate Recall@k for a SINGLE question using the minimum overlap threshold."""
         if not expected_sources:
             return 0.0
 
-        recall_score = sources_found / len(expected_sources)
-        return recall_score
+        top_k_retrieved = retrieved_sources[:k]
+        sources_found = 0
+
+        # Check each expected source to see if it exists in the top k retrieved
+        for expected in expected_sources:
+            for retrieved in top_k_retrieved:
+                overlap = self._overlap_proccess(retrieved, expected)
+                if overlap >= 0.05:
+                    sources_found += 1
+                    break  # Found this expected source! Move on to the next expected one.
+
+        # Question score = number_found / total_number_of_correct_sources
+        return sources_found / len(expected_sources)
 
 
 class MoulinetteCLI:
@@ -141,27 +141,33 @@ class MoulinetteCLI:
         print(f"Total number of questions with sources: {total_with_sources}")
         print(f"Total number of questions with student sources: {questions_with_student_sources}")
 
-        flat_expected: list[MinimalSource] = []
-        flat_retrieved: list[list[MinimalSource]] = []
-
-        for q in valid_gt_questions:
-            student_res = student_search_map.get(q.question_id)
-            retrieved_list = student_res.retrieved_sources if student_res else []
-            
-            for expct in q.sources:
-                flat_expected.append(expct)
-                flat_retrieved.append(retrieved_list)
-
         recall_evaluator = Recall()
         cutoffs = [1, 3, 5, 10]
         
-        print("Evaluation Results")
+        print("\nEvaluation Results")
         print("========================================")
         print(f"Questions evaluated: {total_with_sources}")
 
+        # Calculate Macro-Average Recall@K
         for c in cutoffs:
-            score = recall_evaluator.calculate(flat_retrieved, flat_expected, c)
-            print(f"Recall@{c}: {score:.3f}")
+            total_recall_score = 0.0
+            
+            for q in valid_gt_questions:
+                student_res = student_search_map.get(q.question_id)
+                retrieved_list = student_res.retrieved_sources if student_res else []
+                expected_list = q.sources
+                
+                # Calculate the score for this specific question
+                q_score = recall_evaluator.calculate_question_recall(
+                    retrieved_sources=retrieved_list,
+                    expected_sources=expected_list,
+                    k=c
+                )
+                total_recall_score += q_score
+            
+            # Average the scores across all valid questions
+            final_macro_recall = total_recall_score / total_with_sources if total_with_sources > 0 else 0.0
+            print(f"Recall@{c}: {final_macro_recall:.3f} ({(final_macro_recall * 100):.1f}%)")
 
 
 if __name__ == "__main__":
