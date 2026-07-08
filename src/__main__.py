@@ -8,11 +8,7 @@ from typing import Any, cast
 
 import fire  # type: ignore
 import dspy  # type: ignore
-import chromadb
 import bm25s  # type: ignore
-from chromadb.api import ClientAPI
-from chromadb.api.models.Collection import Collection  # type: ignore
-from chromadb.api.types import Document, Metadata, ID, QueryResult, GetResult
 
 from src.models.models import (
     MinimalAnswer, 
@@ -91,43 +87,16 @@ def get_real_path(normalized_path: str, codebase_dir: str = "vllm-0.10.1") -> st
     return normalized_path
 
 
-def load_retrievers(
-    chroma_path: str = "data/processed/chunks", 
-    collection_name: str = "codebase_chunks", 
-    bm25_save_path: str = "data/processed/bm25_index"
-) -> tuple[Collection, Any]:
-    """Connects to ChromaDB and loads BM25 from disk, or builds it if missing."""
-    os.makedirs(chroma_path, exist_ok=True)
-    chroma_client: ClientAPI = chromadb.PersistentClient(path=chroma_path)
-    collection: Collection = chroma_client.get_or_create_collection(name=collection_name)
+def load_retriever(bm25_save_path: str = "data/processed/bm25_index") -> Any:
+    """Loads the pre-built BM25 index and corpus from disk."""
+    if not os.path.exists(bm25_save_path):
+        raise FileNotFoundError(
+            f"BM25 index not found at {bm25_save_path}. Please run `index` first."
+        )
 
-    if os.path.exists(bm25_save_path):
-        bm25_retriever: Any = bm25s.BM25.load(bm25_save_path, load_corpus=True)  # type: ignore
-        return collection, bm25_retriever
-
-    print("BM25 index not found on disk. Building from ChromaDB (this will be slow)...")
-    all_data: GetResult = collection.get()
-    
-    all_docs: list[Document] = cast(list[Document], all_data.get("documents") or [])
-    all_metas: list[Metadata] = cast(list[Metadata], all_data.get("metadatas") or [])
-    all_ids: list[ID] = cast(list[ID], all_data.get("ids") or [])
-
-    if not all_docs:
-        print("WARNING: ChromaDB is empty! BM25 will have no corpus.")
-        corpus = [{"id": "dummy", "text": "dummy", "metadata": {}}]
-    else:
-        corpus = [
-            {"id": doc_id, "text": text, "metadata": meta}
-            for doc_id, text, meta in zip(all_ids, all_docs, all_metas)
-        ]
-
-    corpus_tokens: Any = bm25s.tokenize([doc["text"] for doc in corpus])  # type: ignore
-    bm25_retriever = bm25s.BM25(corpus=corpus)
-    bm25_retriever.index(corpus_tokens)  # type: ignore
-
-    os.makedirs(os.path.dirname(bm25_save_path), exist_ok=True)
-    bm25_retriever.save(bm25_save_path, corpus=corpus)  # type: ignore
-    return collection, bm25_retriever
+    print(f"Loading BM25 index from {bm25_save_path}...")
+    bm25_retriever: Any = bm25s.BM25.load(bm25_save_path, load_corpus=True)  # type: ignore
+    return bm25_retriever
 
 
 def locate_character_indices(file_path: str, chunk_text: str) -> tuple[int, int]:
@@ -150,52 +119,26 @@ def locate_character_indices(file_path: str, chunk_text: str) -> tuple[int, int]
         return 0, len(chunk_text)
 
 
-def hybrid_retrieve(
-    question: str, k: int, collection: Collection, bm25_retriever: Any
+def bm25_retrieve(
+    question: str, k: int, bm25_retriever: Any
 ) -> tuple[list[str], list[MinimalSource], list[tuple[str, str]]]:
-    """Core retrieval logic that dynamically builds typed MinimalSource items."""
-    vector_results: QueryResult = collection.query(query_texts=[question], n_results=k)
-
-    raw_docs = vector_results.get("documents")
-    raw_metas = vector_results.get("metadatas")
-    raw_ids = vector_results.get("ids")
-
-    vec_docs: list[str] = cast(list[str], raw_docs[0]) if raw_docs is not None and len(raw_docs) > 0 else []
-    vec_metas: list[dict[str, Any]] = cast(list[dict[str, Any]], raw_metas[0]) if raw_metas is not None and len(raw_metas) > 0 else []
-    vec_ids: list[str] = cast(list[str], raw_ids[0]) if raw_ids is not None and len(raw_ids) > 0 else []
-
+    """Core retrieval logic that dynamically builds typed MinimalSource items using BM25."""
     query_tokens: Any = bm25s.tokenize(question)  # type: ignore
-    retrieval_output: Any = bm25_retriever.retrieve(query_tokens, k=k)  # type: ignore
-    bm25_results: list[dict[str, Any]] = cast(list[dict[str, Any]], retrieval_output[0][0]) if retrieval_output else []
-
-    combined_raw_data: list[tuple[str, str, dict[str, Any]]] = []
-    seen_ids: set[str] = set()
-
-    for doc_id, text, meta in zip(vec_ids, vec_docs, vec_metas):
-        if doc_id not in seen_ids:
-            seen_ids.add(doc_id)
-            meta_dict = cast(dict[str, Any], meta) if meta else {}
-            combined_raw_data.append((doc_id, text, meta_dict))
-
-    for match in bm25_results:
-        doc_id_match = cast(str, match.get("id", ""))
-        if doc_id_match and doc_id_match not in seen_ids:
-            seen_ids.add(doc_id_match)
-            combined_raw_data.append(
-                (
-                    doc_id_match,
-                    cast(str, match.get("text", "")),
-                    cast(dict[str, Any], match.get("metadata", {})),
-                )
-            )
-
-    combined_raw_data = combined_raw_data[:k]
+    
+    # bm25s returns (documents, scores)
+    retrieval_output = bm25_retriever.retrieve(query_tokens, k=k)  # type: ignore
+    
+    # Extract the top documents for our single query (batch size 1)
+    retrieved_docs: list[dict[str, Any]] = list(retrieval_output[0][0]) if retrieval_output and len(retrieval_output[0]) > 0 else []
 
     context_texts: list[str] = []
     minimal_sources: list[MinimalSource] = []
     rag_context_tuples: list[tuple[str, str]] = []
 
-    for _, text_val, meta_val in combined_raw_data:
+    for match in retrieved_docs:
+        text_val = cast(str, match.get("text", ""))
+        meta_val = cast(dict[str, Any], match.get("metadata", {}))
+
         raw_path = str(meta_val.get("source", "Unknown file"))
         clean_path = normalize_path(raw_path)
         real_path = get_real_path(clean_path)
@@ -222,11 +165,10 @@ def hybrid_retrieve(
 
 
 class CodebaseRAG(dspy.Module):  # type: ignore
-    """Hybrid Retrieval-Augmented Generation module for codebase querying."""
+    """Retrieval-Augmented Generation module for codebase querying."""
 
-    def __init__(self, collection: Collection, bm25_retriever: Any) -> None:
+    def __init__(self, bm25_retriever: Any) -> None:
         super().__init__()
-        self.collection: Collection = collection
         self.bm25_retriever: Any = bm25_retriever
 
         self.generate_answer: Any = dspy.ChainOfThought(
@@ -235,8 +177,8 @@ class CodebaseRAG(dspy.Module):  # type: ignore
         )
 
     def forward(self, question: str, k: int = 3) -> Any:
-        context_texts, minimal_sources, combined_chunks = hybrid_retrieve(
-            question, k, self.collection, self.bm25_retriever
+        context_texts, minimal_sources, combined_chunks = bm25_retrieve(
+            question, k, self.bm25_retriever
         )
 
         formatted_context_list: list[str] = [
@@ -264,9 +206,9 @@ class CLICommands:
         save_directory: str = "data/output/search_results_and_answer"
     ) -> None:
         setup_environment()
-        chroma_col, bm25_idx = load_retrievers()
+        bm25_idx = load_retriever()
 
-        rag_bot = CodebaseRAG(collection=chroma_col, bm25_retriever=bm25_idx)
+        rag_bot = CodebaseRAG(bm25_retriever=bm25_idx)
         result: Any = rag_bot(question=question, k=k)
 
         answer_text = str(getattr(result, "answer", ""))
@@ -299,16 +241,21 @@ class CLICommands:
         print(f"Saved payload structure to {save_path}")
 
     def index(
-        self, codebase_dir: str = "data/raw/vllm-0.10.1", max_chunk_size: int = 1000
+        self, 
+        codebase_dir: str = "data/raw/vllm-0.10.1", 
+        max_chunk_size: int = 1000,
+        index_path: str = "data/processed/bm25_index"
     ) -> None:
         from src.ingest import CodebaseIndexer  # type: ignore
         indexer: Any = CodebaseIndexer(
-            codebase_dir=codebase_dir, max_chunk_size=max_chunk_size
+            codebase_dir=codebase_dir, 
+            max_chunk_size=max_chunk_size,
+            index_path=index_path
         )
         indexer.run_index()
 
-        print("Pre-building and saving BM25 index to disk...")
-        _, _ = load_retrievers()
+        print("Testing index load...")
+        _ = load_retriever(index_path)
 
     def search_dataset(
         self,
@@ -337,9 +284,9 @@ class CLICommands:
             return
 
         try:
-            chroma_col, bm25_idx = load_retrievers()
+            bm25_idx = load_retriever()
         except Exception as e:
-            print(f"CRITICAL ERROR loading databases: {e}")
+            print(f"CRITICAL ERROR loading database: {e}")
             return
 
         search_results_list: list[MinimalSearchResults] = []
@@ -353,8 +300,8 @@ class CLICommands:
                 continue
 
             try:
-                _, minimal_sources, _ = hybrid_retrieve(
-                    question=q_text, k=k, collection=chroma_col, bm25_retriever=bm25_idx
+                _, minimal_sources, _ = bm25_retrieve(
+                    question=q_text, k=k, bm25_retriever=bm25_idx
                 )
             except Exception as e:
                 print(f"Retrieval error on question {q_id}: {e}")
@@ -459,4 +406,4 @@ class CLICommands:
 
 
 if __name__ == "__main__":
-    fire.Fire(CLICommands)  # type: ignore
+    fire.Fire(CLICommands)
