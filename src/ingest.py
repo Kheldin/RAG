@@ -1,5 +1,6 @@
 import os
 import bm25s
+
 from typing import Any
 
 from langchain_text_splitters import (
@@ -7,6 +8,7 @@ from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
     MarkdownHeaderTextSplitter
 )
+
 
 class CodebaseIndexer:
     """Scans a codebase, splits code/markdown into chunks, and indexes them using bm25s."""
@@ -20,7 +22,7 @@ class CodebaseIndexer:
         self.codebase_dir = codebase_dir
         self.index_path = index_path
         
-        overlap_size = max(10, int(max_chunk_size * 0.10))
+        overlap_size = max(10, int(300))
         
         self.python_splitter = RecursiveCharacterTextSplitter.from_language(
             language=Language.PYTHON, 
@@ -29,8 +31,10 @@ class CodebaseIndexer:
         )
         
         self.markdown_header_splitter = MarkdownHeaderTextSplitter(
-            headers_to_split_on=[("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")]
+            headers_to_split_on=[("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")],
+            strip_headers=False
         )
+
         self.markdown_text_splitter = RecursiveCharacterTextSplitter.from_language(
             language=Language.MARKDOWN,
             chunk_size=max_chunk_size,
@@ -43,6 +47,13 @@ class CodebaseIndexer:
         self.chunk_counter: int = 0
 
     def _process_file(self, file_path: str, file_type: str) -> None:
+        clean_path = file_path.replace("\\", "/")
+        prefixes = ["vllm-0.10.1/", "data/raw/vllm-0.10.1/"]
+        for prefix in prefixes:
+            if clean_path.startswith(prefix):
+                clean_path = clean_path[len(prefix):]
+                break
+
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
@@ -52,20 +63,19 @@ class CodebaseIndexer:
                 
             if file_type == 'python':
                 for chunk in self.python_splitter.split_text(content):
-                    self.documents.append(chunk)
-                    self.metadatas.append({"source": file_path, "type": "python"})
+                    enriched_chunk = f"--- File: {clean_path} ---\n{chunk}"
+                    
+                    self.documents.append(enriched_chunk)
+                    self.metadatas.append({"source": clean_path, "type": "python"})
                     self.ids.append(f"chunk_{self.chunk_counter}")
                     self.chunk_counter += 1
             
             elif file_type == 'markdown':
-                header_splits = self.markdown_header_splitter.split_text(content)
-                final_splits = self.markdown_text_splitter.split_documents(header_splits)
-                
-                for doc in final_splits:
-                    self.documents.append(doc.page_content)
-                    meta: dict[str, Any] = {"source": file_path, "type": "markdown"}
-                    meta.update(doc.metadata)
-                    self.metadatas.append(meta)
+                for chunk in self.markdown_text_splitter.split_text(content):
+                    enriched_chunk = f"--- File: {clean_path} ---\n{chunk}"
+                    
+                    self.documents.append(enriched_chunk)
+                    self.metadatas.append({"source": clean_path, "type": "markdown"})
                     self.ids.append(f"chunk_{self.chunk_counter}")
                     self.chunk_counter += 1
                     
