@@ -13,9 +13,9 @@ dependencies = [
     "langchain-text-splitters==1.1.2",
     "transformers==5.12.1",
     "tqdm==4.68.3",
-    "dspy==3.2.1",
     "chromadb==1.5.2",
-    "sentence-transformers==5.6.0"
+    "sentence-transformers==5.6.0",
+    "ollama==0.6.2"
 ]
 
 [tool.mypy]

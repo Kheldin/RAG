@@ -7,7 +7,7 @@ import socket
 from typing import Any, cast
 
 import fire  # type: ignore
-import dspy  # type: ignore
+import ollama  # type: ignore
 import bm25s  # type: ignore
 import re
 
@@ -20,6 +20,10 @@ from src.models.models import (
     StudentSearchResults
 )
 
+MODEL_NAME = "qwen3:0.6b"
+SYSTEM_INSTRUCTION = "Answer the question using the provided codebase context. Explicitly mention the file names you used from the context headers."
+
+
 def is_ollama_alive(host: str = "127.0.0.1", port: int = 11434) -> bool:
     """Checks if something is listening on the local Ollama port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -28,9 +32,7 @@ def is_ollama_alive(host: str = "127.0.0.1", port: int = 11434) -> bool:
 
 
 def setup_environment() -> None:
-    """Launches Ollama via background subprocess if not running, then configures DSPy."""
-    model_name = "qwen3:0.6b"
-
+    """Launches Ollama via background subprocess if not running and ensures the model is pulled."""
     if not is_ollama_alive():
         print("Ollama server is not running. Launching background subprocess...")
         try:
@@ -54,18 +56,13 @@ def setup_environment() -> None:
             print("Error: The 'ollama' executable was not found in your system PATH.")
             sys.exit(1)
 
-    print(f"Ensuring model '{model_name}' is loaded...")
+    print(f"Ensuring model '{MODEL_NAME}' is loaded...")
     try:
         subprocess.run(
-            ["ollama", "pull", model_name], check=True, stdout=subprocess.DEVNULL
+            ["ollama", "pull", MODEL_NAME], check=True, stdout=subprocess.DEVNULL
         )
     except subprocess.CalledProcessError:
-        print(f"Warning: Failed to execute 'ollama pull {model_name}'. Proceeding anyway...")
-
-    ollama_qwen: Any = dspy.LM(
-        model=f"ollama/{model_name}", api_base="http://localhost:11434", api_key="none"
-    )
-    dspy.configure(lm=ollama_qwen)  # type: ignore
+        print(f"Warning: Failed to execute 'ollama pull {MODEL_NAME}'. Proceeding anyway...")
 
 
 def normalize_path(path: str) -> str:
@@ -165,19 +162,13 @@ def bm25_retrieve(
     return context_texts, minimal_sources, rag_context_tuples
 
 
-class CodebaseRAG(dspy.Module):  # type: ignore
-    """Retrieval-Augmented Generation module for codebase querying."""
+class CodebaseRAG:
+    """Retrieval-Augmented Generation module for codebase querying using Ollama."""
 
     def __init__(self, bm25_retriever: Any) -> None:
-        super().__init__()
         self.bm25_retriever: Any = bm25_retriever
 
-        self.generate_answer: Any = dspy.ChainOfThought(
-            "context, question -> answer",
-            instructions="Answer the question using the provided codebase context. Explicitly mention the file names you used from the context headers.",
-        )
-
-    def forward(self, question: str, k: int = 3) -> Any:
+    def forward(self, question: str, k: int = 3) -> dict[str, Any]:
         context_texts, minimal_sources, combined_chunks = bm25_retrieve(
             question, k, self.bm25_retriever
         )
@@ -187,14 +178,23 @@ class CodebaseRAG(dspy.Module):  # type: ignore
         ]
         context_str: str = "\n".join(formatted_context_list)
 
-        prediction: Any = self.generate_answer(context=context_str, question=question)
+        prompt = f"Context:\n{context_str}\n\nQuestion:\n{question}"
 
-        return dspy.Prediction(
-            context=context_texts,
-            sources=minimal_sources,
-            reasoning=str(getattr(prediction, "reasoning", "")),
-            answer=str(getattr(prediction, "answer", "")),
+        response = ollama.chat(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_INSTRUCTION},
+                {"role": "user", "content": prompt},
+            ],
         )
+
+        answer = response.get("message", {}).get("content", "")
+
+        return {
+            "context": context_texts,
+            "sources": minimal_sources,
+            "answer": answer,
+        }
 
 
 class CLICommands:
@@ -210,14 +210,14 @@ class CLICommands:
         bm25_idx = load_retriever()
 
         rag_bot = CodebaseRAG(bm25_retriever=bm25_idx)
-        result: Any = rag_bot(question=question, k=k)
+        result = rag_bot.forward(question=question, k=k)
 
-        answer_text = str(getattr(result, "answer", ""))
+        answer_text = result["answer"]
 
         answer_res = MinimalAnswer(
             question_id="single_query",
             question_str=question,
-            retrieved_sources=cast(list[MinimalSource], getattr(result, "sources", [])),
+            retrieved_sources=cast(list[MinimalSource], result.get("sources", [])),
             answer=answer_text,
         )
 
@@ -350,11 +350,6 @@ class CLICommands:
 
         setup_environment()
 
-        generator: Any = dspy.ChainOfThought(
-            "context, question -> answer",
-            instructions="Answer the question using the provided codebase context. Explicitly mention the file names you used from the context headers.",
-        )
-
         minimal_answers_list: list[MinimalAnswer] = []
         file_content_cache: dict[str, str] = {}
 
@@ -375,8 +370,17 @@ class CLICommands:
                     context_chunks.append(f"--- File: {src.file_path} ---\n{chunk_text}\n")
 
             context_str = "\n".join(context_chunks)
-            prediction: Any = generator(context=context_str, question=item.question_str)
-            answer_text = str(getattr(prediction, "answer", ""))
+            
+            prompt = f"Context:\n{context_str}\n\nQuestion:\n{item.question_str}"
+            
+            response = ollama.chat(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_INSTRUCTION},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            answer_text = response.get("message", {}).get("content", "")
 
             minimal_answers_list.append(
                 MinimalAnswer(
