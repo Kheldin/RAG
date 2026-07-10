@@ -54,20 +54,20 @@ def locate_character_indices(file_path: str, chunk_text: str) -> tuple[int, int]
     except OSError:
         return 0, len(clean_chunk)
 
-    # --- attempt 1: anchor on first 120 chars (more unique than 60) ----------
+    # anchor on first 120 chars (more unique than 60)
     anchor = stripped[:120]
     start = content.find(anchor)
     if start != -1:
         return start, start + len(clean_chunk)
 
-    # --- attempt 2: normalise line-endings and retry -------------------------
+    # normalise line-endings and retry
     content_norm = content.replace("\r\n", "\n").replace("\r", "\n")
     anchor_norm = anchor.replace("\r\n", "\n").replace("\r", "\n")
     start = content_norm.find(anchor_norm)
     if start != -1:
         return start, start + len(clean_chunk)
 
-    # --- attempt 3: collapse whitespace (handles minor re-formatting) --------
+    # collapse whitespace (handles minor re-formatting)
     _ws = re.compile(r"\s+")
     content_coll = _ws.sub(" ", content_norm)
     anchor_coll = _ws.sub(" ", anchor_norm)

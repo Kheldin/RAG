@@ -69,7 +69,7 @@ class CLI:
             search_results=[
                 MinimalSearchResults(
                     question_id=str(uuid.uuid4()),
-                    question=query,
+                    question_str=query,
                     retrieved_sources=found_files,
                 )
             ],
@@ -92,7 +92,7 @@ class CLI:
             search_results.append(
                 MinimalSearchResults(
                     question_id=item.question_id,
-                    question=item.question,
+                    question_str=item.question,
                     retrieved_sources=found_files,
                 )
             )
@@ -123,7 +123,7 @@ class CLI:
             search_results=[
                 MinimalAnswer(
                     question_id=str(uuid.uuid4()),
-                    question=query,
+                    question_str=query,
                     retrieved_sources=found_files,
                     answer=answer_text,
                 )
@@ -150,7 +150,7 @@ class CLI:
             answers.append(
                 MinimalAnswer(
                     question_id=result.question_id,
-                    question=result.question,
+                    question_str=result.question,
                     retrieved_sources=result.retrieved_sources,
                     answer=answer_text,
                 )

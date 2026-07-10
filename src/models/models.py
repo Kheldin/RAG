@@ -14,14 +14,14 @@ class MinimalSearchResults(BaseModel):
     """Search results for a single question."""
 
     question_id: str
-    question: str
+    question_str: str
     retrieved_sources: List[MinimalSource]
 
 class MinimalAnswer(BaseModel):
     """An answered question with retrieved sources."""
 
     question_id: str
-    question: str
+    question_str: str
     retrieved_sources: List[MinimalSource]
     answer: str
 
