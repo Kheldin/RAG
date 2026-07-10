@@ -44,23 +44,25 @@ class AI:
             for i, chunk in enumerate(chunks)
         )
 
-        examples = [
-            ("Where can I find information about using generative models in vLLM?", 
-             "Information about using generative models in vLLM can be found on the generative models page, as referenced in the supported models documentation."),
-            ("What conditions must be met for vLLM's ModelRunner to use CUDA graphs instead of the regular model?", 
-             "Two conditions must be met: `prefill_meta` must be `None` and `decode_meta.use_cuda_graph` must be `True`. When both conditions are satisfied, the ModelRunner uses `self.graph_runners[virtual_engine]` instead of `self.model`."),
-        ]
-
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are a helpful assistant. "
-                    "Answer in plain text only, do not use markdown, "
-                    "code blocks, or formatting symbols. "
-                    "Just provide direct instructions or explanations."
+                    "You are a strict, expert technical assistant. "
+                    "You must answer the user's question using ONLY the provided Context. "
+                    "Do not use markdown, code blocks, lists, or any formatting symbols. Answer in a single plain text paragraph. "
+                    "If the answer cannot be confidently deduced from the Context, you must reply exactly with: 'Information not found in context.' "
+                    "Be highly concise and direct."
                 ),
             }
+        ]
+        
+        # Upgraded Few-Shot examples to reinforce the "Plain Text" constraint
+        examples = [
+            ("Where can I find information about using generative models in vLLM?", 
+             "Information about using generative models can be found on the generative models page as referenced in the supported models documentation."),
+            ("What conditions must be met for ModelRunner to use CUDA graphs?", 
+             "Two conditions must be met. First, prefill_meta must be None. Second, decode_meta.use_cuda_graph must be True. When both are satisfied, the ModelRunner uses the virtual engine graph runners instead of the regular model.")
         ]
         
         for q, a in examples:
