@@ -1,3 +1,5 @@
+"""Model access and retrieval-augmented generation helpers."""
+
 import os
 import time
 import socket
@@ -8,20 +10,23 @@ from src.models.models import MinimalSource
 from .indexer import retrieve_chunks
 
 def is_ollama_alive(host: str = "127.0.0.1", port: int = 11434) -> bool:
+    """Return True when the Ollama server accepts connections."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(1.0)
         return s.connect_ex((host, port)) == 0
 
 class AI:
-    """AI class to interface with Ollama using strict generation options."""
+    """Interface to Ollama for answer generation."""
     
     def __init__(self) -> None:
+        """Connect to Ollama and load the configured model."""
         self.model_name = "qwen3:0.6b"
         self._ensure_server_running()
         self.client = Client(host="http://localhost:11434", headers={})
         log_message(f"Loaded model {self.model_name}!", LogType.SUCCESS)
 
     def _ensure_server_running(self) -> None:
+        """Start Ollama if the local server is not already running."""
         if not is_ollama_alive():
             log_message("Ollama server not running. Launching...", LogType.WARNING)
             try:
@@ -36,6 +41,7 @@ class AI:
                 raise LLMException("Ollama executable not found in PATH.")
 
     def RAG(self, query: str, k: int = 3, max_length: int = 1024) -> tuple[str, float]:
+        """Answer a query with retrieved context and return the latency."""
         found_files: list[MinimalSource] = []
         chunks = retrieve_chunks(query, found_files, k=k)[::-1]
 

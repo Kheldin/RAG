@@ -1,3 +1,5 @@
+"""Recall evaluation helpers for retrieval results."""
+
 import os
 import json
 from tqdm import tqdm
@@ -6,6 +8,7 @@ from .indexer import retrieve_chunks
 from .models.models import AnsweredQuestion, MinimalSource, StudentSearchResults
 
 def evaluate(dataset_type: str, k: int = 3) -> None:
+    """Evaluate retrieval recall against one of the public answer datasets."""
     dataset_path = f"./data/datasets/AnsweredQuestions/dataset_{dataset_type}_public.json"
     
     if not os.path.exists(dataset_path):
@@ -54,6 +57,7 @@ def evaluate(dataset_type: str, k: int = 3) -> None:
 
 
 def evaluate_student_search_results(student_answer_path: str, dataset_path: str, k: int) -> None:
+    """Evaluate saved student search results against a ground-truth dataset."""
     if not os.path.exists(student_answer_path):
         raise LLMException(f"Student answer file not found: {student_answer_path}")
     if not os.path.exists(dataset_path):

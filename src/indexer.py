@@ -1,3 +1,5 @@
+"""Indexing and retrieval helpers for the BM25-backed RAG pipeline."""
+
 import os
 import re
 import bm25s  # type: ignore
@@ -16,6 +18,7 @@ _BASE_DIRS = ["", "data/raw/vllm-0.10.1/", "vllm-0.10.1/"]
 
 
 def normalize_path(path: str) -> str:
+    """Normalize a repository path to the relative source path used in datasets."""
     path = path.replace("\\", "/")
     for prefix in _PATH_PREFIXES:
         if path.startswith(prefix):
@@ -33,13 +36,12 @@ def get_real_path(normalized_path: str) -> str:
 
 
 def _strip_injected_header(text: str) -> str:
+    """Remove the synthetic file header added during indexing."""
     return re.sub(r"^--- File: .*? ---\n", "", text)
 
 
 def locate_character_indices(file_path: str, chunk_text: str) -> tuple[int, int]:
-    """
-    Find the exact byte-range of *chunk_text* inside *file_path*.
-    """
+    """Find the approximate character range of chunk_text inside file_path."""
     clean_chunk = _strip_injected_header(chunk_text)
     stripped = clean_chunk.lstrip()
 
@@ -90,10 +92,7 @@ def deduplicate_chunks(
     metadata: list[dict[str, Any]],
     similarity_threshold: float = 0.85,
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """
-    Drop near-duplicate chunks that differ only in whitespace or minor edits.
-    Keeps the first (highest-scored) representative.
-    """
+    """Drop near-duplicate chunks and keep the first representative."""
     kept_chunks: list[str] = []
     kept_meta: list[dict[str, Any]] = []
 
@@ -119,9 +118,7 @@ def retrieve_chunks(
     overretrieve_factor: int = 3,
     dedup_threshold: float = 0.85,
 ) -> list[str]:
-    """
-    Retrieve the *k* most relevant chunks for *query* from the BM25 index.
-    """
+    """Retrieve the k most relevant chunks for query from the BM25 index."""
     if not os.path.exists(bm25_save_path):
         raise LLMException(
             f"BM25 index not found at '{bm25_save_path}'. Run indexing first."
@@ -129,7 +126,7 @@ def retrieve_chunks(
 
     retriever: Any = bm25s.BM25.load(bm25_save_path, load_corpus=True)  # type: ignore
 
-    # --- query cleaning --------------------------------------------------
+    # query cleaning
     # Strip conversational fluff to focus BM25 heavily on actual technical variables
     clean_query = query.replace("in vLLM's", "").replace("in vLLM", "").replace("vLLM", "")
     clean_query = re.sub(r"^(What|How|Why|When|Where)( is| does|'s| are| happens)?\b", "", clean_query, flags=re.IGNORECASE)
@@ -152,7 +149,7 @@ def retrieve_chunks(
     raw_texts = [cast(str, d.get("text", "")) for d in raw_docs]
     raw_metas = [cast(dict[str, Any], d.get("metadata", {})) for d in raw_docs]
 
-    # --- deduplication ----------------------------------------------------
+    # deduplication
     deduped_texts, deduped_metas = deduplicate_chunks(
         raw_texts, raw_metas, similarity_threshold=dedup_threshold
     )
@@ -161,7 +158,7 @@ def retrieve_chunks(
     final_texts = deduped_texts[:k]
     final_metas = deduped_metas[:k]
 
-    # --- build output + populate found_files ------------------------------
+    # build output + populate found_files
     chunks: list[str] = []
     for text_val, meta_val in zip(final_texts, final_metas):
         raw_path = str(meta_val.get("source", "Unknown file"))
@@ -189,7 +186,7 @@ def retrieve_chunks(
 
 
 def index_files(codebase_dir: str, max_chunk_size: int = 2000) -> None:
-    """Delegate to the CodebaseIndexer pipeline."""
+    """Build and persist a BM25 index for the selected codebase."""
     log_message("Starting indexing...", LogType.INFO)
     from src.ingest import CodebaseIndexer  # local import to avoid circular deps
 

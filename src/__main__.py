@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Command-line entry point for indexing, retrieval, and answer generation."""
+
 import inspect
 import sys
 import json
@@ -22,6 +24,7 @@ from src.models.models import (
 from src.ai import AI
 
 def validate_args(cli_map: dict[str, Any]) -> None:
+    """Reject unknown CLI flags before dispatching to Fire."""
     argv = sys.argv[1:]
     if not argv:
         return
@@ -46,7 +49,10 @@ def validate_args(cli_map: dict[str, Any]) -> None:
 
 
 class CLI:
+    """CLI commands exposed through Fire."""
+
     def index(self, max_chunk_size: int = 2000) -> None:
+        """Build the retrieval index for the local codebase."""
         if not isinstance(max_chunk_size, int):
             raise LLMException("Invalid arguments!")
         if max_chunk_size <= 0 or max_chunk_size > 2000:
@@ -54,6 +60,7 @@ class CLI:
         index_files("./data/raw/", max_chunk_size)
 
     def search(self, query: str, k: int = 5) -> None:
+        """Run retrieval for a single query and print the results."""
         if not isinstance(query, str) or not isinstance(k, int):
             raise LLMException("Invalid arguments!")
             
@@ -73,6 +80,7 @@ class CLI:
         print(result.model_dump_json(indent=2))
 
     def search_dataset(self, dataset_path: str, save_directory: str, k: int = 5) -> None:
+        """Run retrieval for every question in a dataset and save the outputs."""
         if not isinstance(save_directory, str) or not isinstance(dataset_path, str) or not isinstance(k, int):
             raise LLMException("Invalid arguments!")
             
@@ -107,6 +115,7 @@ class CLI:
         log_message(f"Saved student_search_results to {output_file_path}!", LogType.SUCCESS)
 
     def answer(self, query: str, k: int = 5) -> None:
+        """Generate an answer for a single query using RAG."""
         if not isinstance(query, str) or not isinstance(k, int):
             raise LLMException("Invalid arguments!")
 
@@ -133,6 +142,7 @@ class CLI:
         log_message(f"Answered in {t:.2f}s", LogType.INFO)
 
     def answer_dataset(self, student_search_results_path: str, save_directory: str) -> None:
+        """Generate answers for a saved search-results dataset and write them out."""
         if not isinstance(student_search_results_path, str) or not isinstance(save_directory, str):
             raise LLMException("Invalid arguments!")
             
@@ -170,6 +180,7 @@ class CLI:
         log_message(f"Saved outputs to {output_file_path}!", LogType.SUCCESS)
 
     def evaluate(self, student_answer_path: str | None = None, dataset_path: str | None = None, k: int = 10) -> None:
+        """Evaluate retrieval quality against the bundled datasets."""
         if student_answer_path and dataset_path:
             evaluate_student_search_results(student_answer_path, dataset_path, k)
         else:
@@ -177,6 +188,7 @@ class CLI:
             evaluate("code", 5)
 
 def main() -> None:
+    """Dispatch CLI commands."""
     cli = CLI()
     commands = {
         "index": cli.index,

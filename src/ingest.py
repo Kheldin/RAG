@@ -1,3 +1,5 @@
+"""Codebase ingestion and chunking for BM25 indexing."""
+
 import os
 import bm25s
 
@@ -11,7 +13,7 @@ from langchain_text_splitters import (
 
 
 class CodebaseIndexer:
-    """Scans a codebase, splits code/markdown into chunks, and indexes them using bm25s."""
+    """Scan a codebase, chunk source files, and prepare BM25 inputs."""
     
     def __init__(
         self, 
@@ -19,6 +21,7 @@ class CodebaseIndexer:
         max_chunk_size: int = 1000,
         index_path: str = "data/processed/bm25_index",
     ):
+        """Initialize splitters and in-memory index buffers."""
         self.codebase_dir = codebase_dir
         self.index_path = index_path
         
@@ -47,6 +50,7 @@ class CodebaseIndexer:
         self.chunk_counter: int = 0
 
     def _process_file(self, file_path: str, file_type: str) -> None:
+        """Read one file, split it into chunks, and store the enriched chunks."""
         clean_path = file_path.replace("\\", "/")
         prefixes = ["vllm-0.10.1/", "data/raw/vllm-0.10.1/"]
         for prefix in prefixes:
@@ -83,11 +87,12 @@ class CodebaseIndexer:
             print(f"Error processing file {file_path}: {e}")
 
     def run_index(self) -> None:
+        """Walk the codebase and save a BM25 index with chunk metadata."""
         print(f"Scanning {self.codebase_dir} for Python and Markdown files...")
         
         ignore_dirs = {'.git', 'venv', 'env', '__pycache__', 'node_modules', 'build', 'dist', '.pytest_cache'}
         
-        # 1. Accumulate all documents
+        # Accumulate all documents
         for root, dirs, files in os.walk(self.codebase_dir):
             dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ignore_dirs]
             
@@ -105,20 +110,20 @@ class CodebaseIndexer:
 
         print(f"Found {self.chunk_counter} chunks. Tokenizing and building BM25 index...")
 
-        # 2. Tokenize the corpus
+        # Tokenize the corpus
         corpus_tokens = bm25s.tokenize(self.documents)
 
-        # 3. Create the BM25 model and index the tokens
+        # Create the BM25 model and index the tokens
         retriever = bm25s.BM25()
         retriever.index(corpus_tokens)
 
-        # 4. Prepare corpus payload mapping docs, ids, and metadata
+        # Prepare corpus payload mapping docs, ids, and metadata
         corpus_records = [
             {"id": doc_id, "text": doc_text, "metadata": doc_meta}
             for doc_id, doc_text, doc_meta in zip(self.ids, self.documents, self.metadatas)
         ]
 
-        # 5. Save the index and the corpus for future retrieval
+        # Save the index and the corpus for future retrieval
         os.makedirs(self.index_path, exist_ok=True)
         retriever.save(self.index_path, corpus=corpus_records)
 
