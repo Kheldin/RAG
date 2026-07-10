@@ -4,6 +4,7 @@ import os
 import time
 import socket
 import subprocess
+from typing import Any
 from ollama import Client # type: ignore
 from .exceptions import LLMException, LogType, log_message
 from src.models.models import MinimalSource
@@ -50,7 +51,7 @@ class AI:
             for i, chunk in enumerate(chunks)
         )
 
-        messages = [
+        messages: list[dict[str, str]] = [
             {
                 "role": "system",
                 "content": (
@@ -64,7 +65,7 @@ class AI:
         ]
         
         # Upgraded Few-Shot examples to reinforce the "Plain Text" constraint
-        examples = [
+        examples: list[tuple[str, str]] = [
             ("Where can I find information about using generative models in vLLM?", 
              "Information about using generative models can be found on the generative models page as referenced in the supported models documentation."),
             ("What conditions must be met for ModelRunner to use CUDA graphs?", 
@@ -80,7 +81,7 @@ class AI:
             "content": f"Context:\n{context}\n\nQuestion:\n{query}",
         })
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": messages,
             "stream": False,
@@ -94,19 +95,20 @@ class AI:
         }
 
         try:
-            response = self.client.chat(**payload)
-            answer = (
-                response.message.content 
-                if hasattr(response, "message") 
+            chat_client: Any = self.client
+            response: Any = chat_client.chat(**payload)
+            answer_text: str = (
+                response.message.content
+                if hasattr(response, "message")
                 else response.get("message", {}).get("content", "")
             )
             
             # Using dict .get() fallback for Ollama python client dict structures
-            total_duration = getattr(response, "total_duration", response.get("total_duration", 0))
-            load_duration = getattr(response, "load_duration", response.get("load_duration", 0))
+            total_duration: float = float(getattr(response, "total_duration", response.get("total_duration", 0)))
+            load_duration: float = float(getattr(response, "load_duration", response.get("load_duration", 0)))
             
             total_compute_time = (total_duration - load_duration) / 1e9
         except Exception as e:
             raise LLMException(f"Failed to communicate with Ollama: {e}")
             
-        return answer.strip(), float(total_compute_time)
+        return answer_text.strip(), float(total_compute_time)

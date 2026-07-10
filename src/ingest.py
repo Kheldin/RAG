@@ -1,7 +1,7 @@
 """Codebase ingestion and chunking for BM25 indexing."""
 
 import os
-import bm25s
+import bm25s  # type: ignore
 
 from typing import Any
 
@@ -111,14 +111,15 @@ class CodebaseIndexer:
         print(f"Found {self.chunk_counter} chunks. Tokenizing and building BM25 index...")
 
         # Tokenize the corpus
-        corpus_tokens = bm25s.tokenize(self.documents)
+        bm25s_module: Any = bm25s
+        corpus_tokens: Any = bm25s_module.tokenize(self.documents)
 
         # Create the BM25 model and index the tokens
-        retriever = bm25s.BM25()
+        retriever: Any = bm25s_module.BM25()
         retriever.index(corpus_tokens)
 
         # Prepare corpus payload mapping docs, ids, and metadata
-        corpus_records = [
+        corpus_records: list[dict[str, Any]] = [
             {"id": doc_id, "text": doc_text, "metadata": doc_meta}
             for doc_id, doc_text, doc_meta in zip(self.ids, self.documents, self.metadatas)
         ]

@@ -19,7 +19,7 @@ def evaluate(dataset_type: str, k: int = 3) -> None:
         data = json.load(f)
         question_list = [AnsweredQuestion(**d) for d in data.get("rag_questions", [])]
 
-    recalls = []
+    recalls: list[float] = []
     for question in tqdm(question_list, desc=f"Evaluating {dataset_type}"):
         found_files: list[MinimalSource] = []
         retrieve_chunks(question.question, found_files, k=k)
@@ -80,7 +80,7 @@ def evaluate_student_search_results(student_answer_path: str, dataset_path: str,
         except Exception as e:
             raise LLMException(f"Invalid student answers format. Error: {e}")
 
-    recalls = []
+    recalls: list[float] = []
     for result in search_results:
         question_id = result.question_id
         if question_id not in dataset_questions:

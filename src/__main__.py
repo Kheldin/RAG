@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 import fire # type: ignore
+from collections.abc import Callable
 from typing import Any
 from tqdm import tqdm
 
@@ -23,7 +24,9 @@ from src.models.models import (
 )
 from src.ai import AI
 
-def validate_args(cli_map: dict[str, Any]) -> None:
+CommandMap = dict[str, Callable[..., Any]]
+
+def validate_args(cli_map: CommandMap) -> None:
     """Reject unknown CLI flags before dispatching to Fire."""
     argv = sys.argv[1:]
     if not argv:
@@ -53,17 +56,12 @@ class CLI:
 
     def index(self, max_chunk_size: int = 2000) -> None:
         """Build the retrieval index for the local codebase."""
-        if not isinstance(max_chunk_size, int):
-            raise LLMException("Invalid arguments!")
         if max_chunk_size <= 0 or max_chunk_size > 2000:
             raise LLMException("max_chunk_size field need to be positive and lower than 2000")
         index_files("./data/raw/", max_chunk_size)
 
     def search(self, query: str, k: int = 5) -> None:
         """Run retrieval for a single query and print the results."""
-        if not isinstance(query, str) or not isinstance(k, int):
-            raise LLMException("Invalid arguments!")
-            
         found_files: list[MinimalSource] = []
         retrieve_chunks(query, found_files, k=k)
         
@@ -81,16 +79,13 @@ class CLI:
 
     def search_dataset(self, dataset_path: str, save_directory: str, k: int = 5) -> None:
         """Run retrieval for every question in a dataset and save the outputs."""
-        if not isinstance(save_directory, str) or not isinstance(dataset_path, str) or not isinstance(k, int):
-            raise LLMException("Invalid arguments!")
-            
         try:
             with open(dataset_path, "r", encoding="utf-8") as f:
                 dataset = RagDataset.model_validate(json.load(f))
         except Exception as e:
             raise LLMException(f"failed to read/parse file: {dataset_path}. Error: {e}")
             
-        search_results = []
+        search_results: list[MinimalSearchResults] = []
         for item in tqdm(dataset.rag_questions, desc="Searching dataset"):
             found_files: list[MinimalSource] = []
             retrieve_chunks(item.question, found_files, k=k)
@@ -116,9 +111,6 @@ class CLI:
 
     def answer(self, query: str, k: int = 5) -> None:
         """Generate an answer for a single query using RAG."""
-        if not isinstance(query, str) or not isinstance(k, int):
-            raise LLMException("Invalid arguments!")
-
         model = AI()
         answer_text, t = model.RAG(query, k=k)
 
@@ -143,9 +135,6 @@ class CLI:
 
     def answer_dataset(self, student_search_results_path: str, save_directory: str) -> None:
         """Generate answers for a saved search-results dataset and write them out."""
-        if not isinstance(student_search_results_path, str) or not isinstance(save_directory, str):
-            raise LLMException("Invalid arguments!")
-            
         try:
             with open(student_search_results_path, "r", encoding="utf-8") as f:
                 search_data = StudentSearchResults.model_validate(json.load(f))
@@ -153,7 +142,7 @@ class CLI:
             raise LLMException(f"failed to read/parse file: {student_search_results_path}. Error: {e}")
 
         model = AI()
-        answers = []
+        answers: list[MinimalAnswer] = []
         log_message(f"Loaded {len(search_data.search_results)} questions", LogType.INFO)
 
         for result in tqdm(search_data.search_results, desc="Generating answers"):
@@ -190,7 +179,7 @@ class CLI:
 def main() -> None:
     """Dispatch CLI commands."""
     cli = CLI()
-    commands = {
+    commands: CommandMap = {
         "index": cli.index,
         "search": cli.search,
         "search_dataset": cli.search_dataset,
@@ -199,7 +188,8 @@ def main() -> None:
         "evaluate": cli.evaluate,
     }
     validate_args(commands)
-    fire.Fire(commands)
+    fire_module: Any = fire
+    fire_module.Fire(commands)
 
 if __name__ == "__main__":
     try:
