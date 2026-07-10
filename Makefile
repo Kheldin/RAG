@@ -24,7 +24,7 @@ lint:
 	@echo "Running mypy..."
 	mypy src --warn-return-any --warn-unused-ignores --ignore-missing-imports --disallow-untyped-defs --check-untyped-defs
 	@echo "Running flake8..."
-	flake8 .
+	flake8 src
 
 lint-strict:
 	@echo "Running mypy (strict mode)..."

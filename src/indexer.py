@@ -2,11 +2,10 @@
 
 import os
 import re
-import bm25s  # type: ignore
+import bm25s
 from typing import Any, cast
-from src.models.models import MinimalSource
+from src.models import MinimalSource
 from .exceptions import LLMException, LogType, log_message
-
 
 _PATH_PREFIXES = [
     "data/raw/vllm-0.10.1/",
@@ -18,7 +17,7 @@ _BASE_DIRS = ["", "data/raw/vllm-0.10.1/", "vllm-0.10.1/"]
 
 
 def normalize_path(path: str) -> str:
-    """Normalize a repository path to the relative source path used in datasets."""
+    """Normalize a repository path to the relative dataset source path."""
     path = path.replace("\\", "/")
     for prefix in _PATH_PREFIXES:
         if path.startswith(prefix):
@@ -40,7 +39,10 @@ def _strip_injected_header(text: str) -> str:
     return re.sub(r"^--- File: .*? ---\n", "", text)
 
 
-def locate_character_indices(file_path: str, chunk_text: str) -> tuple[int, int]:
+def locate_character_indices(
+    file_path: str,
+    chunk_text: str,
+) -> tuple[int, int]:
     """Find the approximate character range of chunk_text inside file_path."""
     clean_chunk = _strip_injected_header(chunk_text)
     stripped = clean_chunk.lstrip()
@@ -80,8 +82,8 @@ def locate_character_indices(file_path: str, chunk_text: str) -> tuple[int, int]
 
 def _jaccard(a: str, b: str, ngram: int = 4) -> float:
     """Character n-gram Jaccard similarity — fast near-duplicate check."""
-    sa = {a[i: i + ngram] for i in range(len(a) - ngram + 1)}
-    sb = {b[i: i + ngram] for i in range(len(b) - ngram + 1)}
+    sa = {a[i:i + ngram] for i in range(len(a) - ngram + 1)}
+    sb = {b[i:i + ngram] for i in range(len(b) - ngram + 1)}
     if not sa or not sb:
         return 0.0
     return len(sa & sb) / len(sa | sb)
@@ -99,7 +101,10 @@ def deduplicate_chunks(
     for text, meta in zip(chunks, metadata):
         norm = re.sub(r"\s+", " ", _strip_injected_header(text)).strip()
         is_dup = any(
-            _jaccard(norm, re.sub(r"\s+", " ", _strip_injected_header(k)).strip())
+            _jaccard(
+                norm,
+                re.sub(r"\s+", " ", _strip_injected_header(k)).strip(),
+            )
             >= similarity_threshold
             for k in kept_chunks
         )
@@ -124,18 +129,27 @@ def retrieve_chunks(
             f"BM25 index not found at '{bm25_save_path}'. Run indexing first."
         )
 
-    retriever: Any = bm25s.BM25.load(bm25_save_path, load_corpus=True)  # type: ignore
+    retriever: Any = bm25s.BM25.load(bm25_save_path, load_corpus=True)
 
     # query cleaning
-    # Strip conversational fluff to focus BM25 heavily on actual technical variables
-    clean_query = query.replace("in vLLM's", "").replace("in vLLM", "").replace("vLLM", "")
-    clean_query = re.sub(r"^(What|How|Why|When|Where)( is| does|'s| are| happens)?\b", "", clean_query, flags=re.IGNORECASE)
+    # Strip conversational fluff to focus BM25 on technical terms.
+    clean_query = (
+        query.replace("in vLLM's", "")
+        .replace("in vLLM", "")
+        .replace("vLLM", "")
+    )
+    clean_query = re.sub(
+        r"^(What|How|Why|When|Where)( is| does|'s| are| happens)?\b",
+        "",
+        clean_query,
+        flags=re.IGNORECASE,
+    )
 
-    query_tokens: Any = bm25s.tokenize(clean_query, stopwords="en")  # type: ignore
+    query_tokens: Any = bm25s.tokenize(clean_query, stopwords="en")
 
     # over-retrieve so deduplication has candidates to thin out
     n_candidates = min(k * overretrieve_factor, 50)
-    retrieval_output = retriever.retrieve(query_tokens, k=n_candidates)  # type: ignore
+    retrieval_output = retriever.retrieve(query_tokens, k=n_candidates)
 
     raw_docs: list[dict[str, Any]] = (
         list(retrieval_output[0][0])
@@ -151,7 +165,9 @@ def retrieve_chunks(
 
     # deduplication
     deduped_texts, deduped_metas = deduplicate_chunks(
-        raw_texts, raw_metas, similarity_threshold=dedup_threshold
+        raw_texts,
+        raw_metas,
+        similarity_threshold=dedup_threshold,
     )
 
     # take top-k after dedup
@@ -188,7 +204,8 @@ def retrieve_chunks(
 def index_files(codebase_dir: str, max_chunk_size: int = 2000) -> None:
     """Build and persist a BM25 index for the selected codebase."""
     log_message("Starting indexing...", LogType.INFO)
-    from src.ingest import CodebaseIndexer  # local import to avoid circular deps
+    # Local import to avoid circular dependencies.
+    from src.ingest import CodebaseIndexer
 
     indexer = CodebaseIndexer(
         codebase_dir=codebase_dir,

@@ -6,7 +6,7 @@ import sys
 import json
 import os
 import uuid
-import fire # type: ignore
+import fire
 from collections.abc import Callable
 from typing import Any
 from tqdm import tqdm
@@ -14,7 +14,7 @@ from tqdm import tqdm
 from src.recall_metrics import evaluate, evaluate_student_search_results
 from src.indexer import index_files, retrieve_chunks
 from src.exceptions import LLMException, LogType, log_message
-from src.models.models import (
+from src.models import (
     MinimalSource,
     StudentSearchResults,
     MinimalSearchResults,
@@ -25,6 +25,7 @@ from src.models.models import (
 from src.ai import AI
 
 CommandMap = dict[str, Callable[..., Any]]
+
 
 def validate_args(cli_map: CommandMap) -> None:
     """Reject unknown CLI flags before dispatching to Fire."""
@@ -57,14 +58,16 @@ class CLI:
     def index(self, max_chunk_size: int = 2000) -> None:
         """Build the retrieval index for the local codebase."""
         if max_chunk_size <= 0 or max_chunk_size > 2000:
-            raise LLMException("max_chunk_size field need to be positive and lower than 2000")
+            raise LLMException(
+                "max_chunk_size field need to be positive and lower than 2000"
+            )
         index_files("./data/raw/", max_chunk_size)
 
     def search(self, query: str, k: int = 5) -> None:
         """Run retrieval for a single query and print the results."""
         found_files: list[MinimalSource] = []
         retrieve_chunks(query, found_files, k=k)
-        
+
         result = StudentSearchResults(
             search_results=[
                 MinimalSearchResults(
@@ -77,14 +80,18 @@ class CLI:
         )
         print(result.model_dump_json(indent=2))
 
-    def search_dataset(self, dataset_path: str, save_directory: str, k: int = 5) -> None:
-        """Run retrieval for every question in a dataset and save the outputs."""
+    def search_dataset(
+        self, dataset_path: str, save_directory: str, k: int = 5
+    ) -> None:
+        """Run retrieval over a dataset and save the retrieval outputs."""
         try:
             with open(dataset_path, "r", encoding="utf-8") as f:
                 dataset = RagDataset.model_validate(json.load(f))
         except Exception as e:
-            raise LLMException(f"failed to read/parse file: {dataset_path}. Error: {e}")
-            
+            raise LLMException(
+                f"failed to read/parse file: {dataset_path}. Error: {e}"
+            )
+
         search_results: list[MinimalSearchResults] = []
         for item in tqdm(dataset.rag_questions, desc="Searching dataset"):
             found_files: list[MinimalSource] = []
@@ -99,23 +106,31 @@ class CLI:
 
         result = StudentSearchResults(search_results=search_results, k=k)
         os.makedirs(save_directory, exist_ok=True)
-        output_file_path = os.path.join(save_directory, os.path.basename(dataset_path))
-        
+        output_file_path = os.path.join(
+            save_directory, os.path.basename(dataset_path)
+        )
+
         try:
             with open(output_file_path, "w", encoding="utf-8") as f:
                 f.write(result.model_dump_json(indent=2))
         except Exception as e:
-            raise LLMException(f"failed to write file: {output_file_path}") from e
-            
-        log_message(f"Saved student_search_results to {output_file_path}!", LogType.SUCCESS)
+            raise LLMException(
+                f"failed to write file: {output_file_path}"
+            ) from e
+
+        log_message(
+            f"Saved student_search_results to {output_file_path}!",
+            LogType.SUCCESS,
+        )
 
     def answer(self, query: str, k: int = 5) -> None:
         """Generate an answer for a single query using RAG."""
         model = AI()
         answer_text, t = model.RAG(query, k=k)
 
-        # AI.RAG modifies found_files inside, but we need them here too. 
-        # So we just run a quick retrieve_chunks purely to get the formatted MinimalSources
+        # AI.RAG modifies found_files inside, but we need them here too.
+        # So we just run a quick retrieve_chunks purely to get the
+        # formatted MinimalSources
         found_files: list[MinimalSource] = []
         retrieve_chunks(query, found_files, k=k)
 
@@ -133,19 +148,29 @@ class CLI:
         print(result.model_dump_json(indent=2))
         log_message(f"Answered in {t:.2f}s", LogType.INFO)
 
-    def answer_dataset(self, student_search_results_path: str, save_directory: str) -> None:
-        """Generate answers for a saved search-results dataset and write them out."""
+    def answer_dataset(
+        self, student_search_results_path: str, save_directory: str
+    ) -> None:
+        """Generate answers for saved search results and write outputs."""
         try:
             with open(student_search_results_path, "r", encoding="utf-8") as f:
                 search_data = StudentSearchResults.model_validate(json.load(f))
         except Exception as e:
-            raise LLMException(f"failed to read/parse file: {student_search_results_path}. Error: {e}")
+            raise LLMException(
+                "failed to read/parse file: "
+                f"{student_search_results_path}. Error: {e}"
+            )
 
         model = AI()
         answers: list[MinimalAnswer] = []
-        log_message(f"Loaded {len(search_data.search_results)} questions", LogType.INFO)
+        log_message(
+            f"Loaded {len(search_data.search_results)} questions", LogType.INFO
+        )
 
-        for result in tqdm(search_data.search_results, desc="Generating answers"):
+        for result in tqdm(
+            search_data.search_results,
+            desc="Generating answers",
+        ):
             answer_text, _ = model.RAG(result.question, k=search_data.k)
             answers.append(
                 MinimalAnswer(
@@ -156,25 +181,41 @@ class CLI:
                 )
             )
 
-        final_result = StudentSearchResultsAndAnswer(search_results=answers, k=search_data.k)
+        final_result = StudentSearchResultsAndAnswer(
+            search_results=answers, k=search_data.k
+        )
         os.makedirs(save_directory, exist_ok=True)
-        output_file_path = os.path.join(save_directory, os.path.basename(student_search_results_path))
-        
+        output_file_path = os.path.join(
+            save_directory, os.path.basename(student_search_results_path)
+        )
+
         try:
             with open(output_file_path, "w", encoding="utf-8") as f:
                 f.write(final_result.model_dump_json(indent=2))
         except Exception as e:
-            raise LLMException(f"failed to write file: {output_file_path}") from e
-            
+            raise LLMException(
+                f"failed to write file: {output_file_path}"
+            ) from e
+
         log_message(f"Saved outputs to {output_file_path}!", LogType.SUCCESS)
 
-    def evaluate(self, student_answer_path: str | None = None, dataset_path: str | None = None, k: int = 10) -> None:
+    def evaluate(
+        self,
+        student_answer_path: str | None = None,
+        dataset_path: str | None = None,
+        k: int = 10,
+    ) -> None:
         """Evaluate retrieval quality against the bundled datasets."""
         if student_answer_path and dataset_path:
-            evaluate_student_search_results(student_answer_path, dataset_path, k)
+            evaluate_student_search_results(
+                student_answer_path,
+                dataset_path,
+                k,
+            )
         else:
             evaluate("docs", 5)
             evaluate("code", 5)
+
 
 def main() -> None:
     """Dispatch CLI commands."""
@@ -190,6 +231,7 @@ def main() -> None:
     validate_args(commands)
     fire_module: Any = fire
     fire_module.Fire(commands)
+
 
 if __name__ == "__main__":
     try:
