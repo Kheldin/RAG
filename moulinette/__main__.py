@@ -2,7 +2,7 @@ import os
 import json
 from typing import Any
 
-import fire  # type: ignore[import-not-found,import-untyped]
+import fire
 
 from src.models import (RagDataset,
                         StudentSearchResults,
