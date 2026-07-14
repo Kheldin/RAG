@@ -18,7 +18,7 @@ class CodebaseIndexer:
     def __init__(
         self,
         codebase_dir: str,
-        max_chunk_size: int = 1000,
+        max_chunk_size: int = 2000,
         index_path: str = "data/processed/bm25_index",
     ):
         """Initialize splitters and in-memory index buffers."""
