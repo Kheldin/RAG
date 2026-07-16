@@ -1,8 +1,10 @@
 """Pydantic models for retrieval, answers, and datasets."""
 
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List
 import uuid
+
+from pydantic import BaseModel, Field
+
 
 class MinimalSource(BaseModel):
     """A source chunk location used in retrieval outputs."""
@@ -22,6 +24,7 @@ class MinimalSearchResults(BaseModel):
 
 class MinimalAnswer(MinimalSearchResults):
     """An answered question with retrieved sources."""
+
     answer: str
 
 
@@ -53,4 +56,4 @@ class AnsweredQuestion(UnansweredQuestion):
 class RagDataset(BaseModel):
     """Container for all retrieval-augmented questions in a dataset."""
 
-    rag_questions:  List[AnsweredQuestion | UnansweredQuestion]
+    rag_questions: List[AnsweredQuestion | UnansweredQuestion]
