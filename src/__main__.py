@@ -63,22 +63,35 @@ class CLI:
             )
         index_files("./data/raw/", max_chunk_size)
 
-    def search(self, query: str, k: int = 5) -> None:
-        """Run retrieval for a single query and print the results."""
+    def search(self, query: str, k: int = 5, output_path: str = "data/output/search_output.json") -> None:
+        """Run retrieval for a single query, print formatted results, and save to JSON."""
         found_files: list[MinimalSource] = []
         retrieve_chunks(query, found_files, k=k)
 
+        # 1. Print the ranked source locations to the terminal
+        for source in found_files:
+            # Using the correct attributes matching your indexer's output
+            clean_path = source.file_path.removeprefix("./")
+            print(f"{clean_path} [{source.first_character_index}:{source.last_character_index}]")
+
+        # 2. Package the results into your Pydantic models
         result = StudentSearchResults(
             search_results=[
                 MinimalSearchResults(
                     question_id=str(uuid.uuid4()),
-                    question_str=query,
+                    question=query,
                     retrieved_sources=found_files,
                 )
             ],
             k=k,
         )
-        print(result.model_dump_json(indent=2))
+
+        # 3. Save the results to a JSON file
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(result.model_dump_json(indent=2))
+        except Exception as e:
+            raise LLMException(f"Failed to write file: {output_path}. Error: {e}") from e
 
     def search_dataset(
         self, dataset_path: str, save_directory: str, k: int = 5
@@ -99,7 +112,7 @@ class CLI:
             search_results.append(
                 MinimalSearchResults(
                     question_id=item.question_id,
-                    question_str=item.question,
+                    question=item.question,
                     retrieved_sources=found_files,
                 )
             )
@@ -123,29 +136,44 @@ class CLI:
             LogType.SUCCESS,
         )
 
-    def answer(self, query: str, k: int = 5) -> None:
-        """Generate an answer for a single query using RAG."""
+    def answer(self, query: str, k: int = 5, output_path: str = "data/output/answer_output.json") -> None:
+        """Generate an answer for a single query using RAG, print it, and save details to JSON."""
         model = AI()
         answer_text, t = model.RAG(query, k=k)
+
+        # 1. Print ONLY the answer to the terminal
+        print(f"\nAnswer:\n{answer_text}\n")
 
         # AI.RAG modifies found_files inside, but we need them here too.
         # So we just run a quick retrieve_chunks purely to get the
         # formatted MinimalSources
         found_files: list[MinimalSource] = []
         retrieve_chunks(query, found_files, k=k)
+        
+        # Strip the './' from the file paths for the JSON output
+        for source in found_files:
+            source.file_path = source.file_path.removeprefix("./")
 
+        # 2. Package the results into your Pydantic models
         result = StudentSearchResultsAndAnswer(
             search_results=[
                 MinimalAnswer(
                     question_id=str(uuid.uuid4()),
-                    question_str=query,
+                    question=query,
                     retrieved_sources=found_files,
                     answer=answer_text,
                 )
             ],
             k=k,
         )
-        print(result.model_dump_json(indent=2))
+
+        # 3. Save the full result object to a JSON file
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(result.model_dump_json(indent=2))
+        except Exception as e:
+            raise LLMException(f"Failed to write file: {output_path}. Error: {e}") from e
+            
         log_message(f"Answered in {t:.2f}s", LogType.INFO)
 
     def answer_dataset(
@@ -175,7 +203,7 @@ class CLI:
             answers.append(
                 MinimalAnswer(
                     question_id=result.question_id,
-                    question_str=result.question,
+                    question=result.question,
                     retrieved_sources=result.retrieved_sources,
                     answer=answer_text,
                 )
