@@ -111,7 +111,6 @@ class CodebaseIndexer:
             ".pytest_cache",
         }
 
-        # Accumulate all documents
         for root, dirs, files in os.walk(self.codebase_dir):
             dirs[:] = [
                 d
@@ -137,15 +136,12 @@ class CodebaseIndexer:
             "Tokenizing and building BM25 index..."
         )
 
-        # Tokenize the corpus
         bm25s_module: Any = bm25s
         corpus_tokens: Any = bm25s_module.tokenize(self.documents)
 
-        # Create the BM25 model and index the tokens
         retriever: Any = bm25s_module.BM25()
         retriever.index(corpus_tokens)
 
-        # Prepare corpus payload mapping docs, ids, and metadata
         corpus_records: list[dict[str, Any]] = [
             {"id": doc_id, "text": doc_text, "metadata": doc_meta}
             for doc_id, doc_text, doc_meta in zip(
@@ -153,7 +149,6 @@ class CodebaseIndexer:
             )
         ]
 
-        # Save the index and the corpus for future retrieval
         os.makedirs(self.index_path, exist_ok=True)
         retriever.save(self.index_path, corpus=corpus_records)
 

@@ -43,12 +43,13 @@ class StudentSearchResultsAndAnswer(BaseModel):
 
 
 class UnansweredQuestion(BaseModel):
+    """Container for UnansweredQuestion"""
     question_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     question: str
 
 
 class AnsweredQuestion(UnansweredQuestion):
-    """Answered question"""
+    """Container for Answered question"""
     sources: List[MinimalSource]
     answer: str
 

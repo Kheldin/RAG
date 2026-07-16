@@ -77,8 +77,6 @@ class AI:
             }
         ]
 
-        # Upgraded Few-Shot examples to reinforce the "Plain Text"
-        # constraint
         examples: list[tuple[str, str]] = [
             (
                 (
@@ -135,8 +133,6 @@ class AI:
                 else response.get("message", {}).get("content", "")
             )
 
-            # Using dict .get() fallback for Ollama python client
-            # dict structures
             total_duration: float = float(
                 getattr(
                     response,

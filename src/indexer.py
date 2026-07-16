@@ -56,7 +56,7 @@ def locate_character_indices(
     except OSError:
         return 0, len(clean_chunk)
 
-    # anchor on first 120 chars (more unique than 60)
+    # anchor on first 120 chars
     anchor = stripped[:120]
     start = content.find(anchor)
     if start != -1:
@@ -131,8 +131,6 @@ def retrieve_chunks(
 
     retriever: Any = bm25s.BM25.load(bm25_save_path, load_corpus=True)
 
-    # query cleaning
-    # Strip conversational fluff to focus BM25 on technical terms.
     clean_query = (
         query.replace("in vLLM's", "")
         .replace("in vLLM", "")
